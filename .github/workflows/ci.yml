@@ -7,8 +7,9 @@ on:
 
 jobs:
   build-and-test:
-    # 需要带 Xcode 27 的 macOS 27 runner。
-    runs-on: macos-27
+    # GitHub 带 Xcode 27 的构建机标签是 xcode-27（macOS 27，只有 Apple Silicon），没有叫 macos-27 的标签；
+    # macos-26 上只有 Xcode 26，编不了部署目标为 macOS 27 的工程。
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
       - name: Xcode version
