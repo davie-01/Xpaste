@@ -2,6 +2,8 @@
 
 [English](README.md) | 简体中文
 
+![XPaste：macOS 剪贴板历史](.github/assets/xpaste-readme-hero.png)
+
 一个 macOS 剪贴板历史管理工具，用 Swift 从零写起，是我个人的学习研究项目。
 
 XPaste 记下你复制过的内容（文本、富文本、图片、链接、颜色、文件），放在屏幕底部的面板里，可以随时搜索、预览、编辑，再粘贴回去。

@@ -2,6 +2,8 @@
 
 English | [简体中文](README.zh-CN.md)
 
+![XPaste — clipboard history for macOS](.github/assets/xpaste-readme-hero.png)
+
 A clipboard history manager for macOS, written from scratch in Swift as a personal study project.
 
 XPaste remembers what you copy — text, rich text, images, links, colors and files — and puts it in a panel along the bottom of the screen, ready to search, preview, edit and paste back.
