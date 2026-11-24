@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 
 /// 剪贴板历史的持久化。所有写操作各自在一个事务里完成。
 ///
-/// 语义与原版实测一致（Docs/08 第 9 节）：
+/// 语义与原版实测一致（Docs/归档/调研/08 第 9 节）：
 /// - 历史视图是 `timestamp` 非空的条目；Pinboard 视图是 `listID` 等于该列表的条目，两者独立。
 /// - 相同内容（checksum）全库只有一条记录，再次复制只更新 `timestamp`。
 public final class HistoryStore: Sendable {
@@ -277,7 +277,7 @@ public final class HistoryStore: Sendable {
         }
     }
 
-    /// 编辑保存：用新内容替换条目的全部表示。位置、时间、名称和所属 Pinboard 都不变（原版实测，Docs/08 第 9.14 节）。
+    /// 编辑保存：用新内容替换条目的全部表示。位置、时间、名称和所属 Pinboard 都不变（原版实测，Docs/归档/调研/08 第 9.14 节）。
     /// 条目已不存在时返回 nil。
     @discardableResult
     public func replaceContent(of id: Int64, with snapshot: ClipSnapshot, now: Date = Date()) throws -> ClipSummary? {
@@ -600,7 +600,7 @@ public final class HistoryStore: Sendable {
         }
     }
 
-    /// 删除 Pinboard。原版实测（Docs/08 第 9.1 节）：仍在历史里的条目保留，只是失去归属；
+    /// 删除 Pinboard。原版实测（Docs/归档/调研/08 第 9.1 节）：仍在历史里的条目保留，只是失去归属；
     /// 只存在于这个 Pinboard 的条目（已从历史移出）才随之删除。
     public func deletePinboard(id: String) throws {
         try db.write { db in

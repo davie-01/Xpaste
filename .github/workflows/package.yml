@@ -13,7 +13,7 @@ jobs:
   package:
     runs-on: xcode-27
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Xcode version
         run: xcodebuild -version
       - name: Install XcodeGen
@@ -21,7 +21,7 @@ jobs:
       - name: Build and package
         run: Tools/package.sh
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: XPaste-arm64
           path: dist/*

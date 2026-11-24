@@ -7,7 +7,7 @@ import PasteCore
 ///
 /// 隔离：数据放在临时目录，偏好只用 `AppPreferences.benchSuite`，采集和回放只读写命名剪贴板 `com.mars.XPaste.bench`；
 /// 不注册全局快捷键，不放音效（`sound` 场景除外），不启动 MCP，不取链接信息，不向任何应用发 ⌘V。结束时临时目录、偏好域和命名剪贴板都清掉。
-/// 场景和参数见 `Tools/bench/run.sh` 和 Docs/07 第 3 节。
+/// 场景和参数见 `Tools/bench/run.sh` 和 Docs/归档/调研/07 第 3 节。
 @MainActor
 enum Bench {
     static let pasteboardName = "com.mars.XPaste.bench"

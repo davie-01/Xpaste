@@ -23,7 +23,7 @@ struct ToolError: Error {
     init(_ message: String) { self.message = message }
 }
 
-/// 名称和参数沿用原版（Docs/08 第 9.23 节），AI 工具换用 XPaste 时用法不变。
+/// 名称和参数沿用原版（Docs/归档/调研/08 第 9.23 节），AI 工具换用 XPaste 时用法不变。
 /// 被忽略的应用和机密内容在采集时就没有入库，这里只能读到库里已有的数据。
 struct MCPTools: Sendable {
     let store: HistoryStore

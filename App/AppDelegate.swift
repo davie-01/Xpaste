@@ -539,7 +539,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController.toggle()
     }
 
-    /// Stack 快捷键：面板开着、有选中项时，用选中项创建或追加 Stack（Docs/验收记录/Stack改版.md S4）；否则开关 Stack。
+    /// Stack 快捷键：面板开着、有选中项时，用选中项创建或追加 Stack（Docs/归档/验收记录/Stack改版.md S4）；否则开关 Stack。
     private func stackShortcutPressed() {
         if panelController.isVisible, panelController.addSelectionToStack() { return }
         stack?.toggle()

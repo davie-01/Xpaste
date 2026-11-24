@@ -39,7 +39,7 @@ private final class EditorRootView: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// 文本、链接、颜色的编辑与新建文本（Docs/08 第 5.5、9.14 节）。独立的浮动窗口，打开时主面板已收起。
+/// 文本、链接、颜色的编辑与新建文本（Docs/归档/调研/08 第 5.5、9.14 节）。独立的浮动窗口，打开时主面板已收起。
 @MainActor
 final class EditorController: NSObject {
     private var window: EditorPanel?

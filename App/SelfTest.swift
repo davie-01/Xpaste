@@ -1038,7 +1038,7 @@ enum SelfTest {
             let revived = try store.clips(matching: ClipQuery(text: "stackdoomed"), limit: 5)
             check("Stack 里的条目被删除后粘出，不回到历史", stackBoard.string(forType: .string) == "stackdoomed 9417" && revived.isEmpty)
 
-            // 3g2. Stack 改版（Docs/验收记录/Stack改版.md）：从面板加入、排序、插队、删除与撤销、全部粘贴、纯文本、行内容
+            // 3g2. Stack 改版（Docs/归档/验收记录/Stack改版.md）：从面板加入、排序、插队、删除与撤销、全部粘贴、纯文本、行内容
             let wasPlain = AppPreferences.shared.stackPastePlainText
             AppPreferences.shared.stackPastePlainText = false
             // 上一段测完停在反转状态；这一段从默认方向（新的放最上面）开始。

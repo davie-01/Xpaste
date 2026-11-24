@@ -1,9 +1,9 @@
 import AppKit
 
-/// 主面板的样式数值，来自 Docs/08-本机核对结果.md 第 5.1 节的实测。只在这里改。
+/// 主面板的样式数值，来自 Docs/归档/调研/08-本机核对结果.md 第 5.1 节的实测。只在这里改。
 enum PanelMetrics {
     /// 默认高度；用户可在 minWindowHeight…maxWindowHeight 之间拖动上缘调整，双击上缘或从菜单恢复到它。
-    /// 原版实测是 319（Docs/08 第 5.1 节），2026-11-24 用户决定改为 332（卡片边长 234）。
+    /// 原版实测是 319（Docs/归档/调研/08 第 5.1 节），2026-11-24 用户决定改为 332（卡片边长 234）。
     static let windowHeight: CGFloat = 332
     /// 拖动时离默认高度这么近就吸到默认高度上。
     static let heightSnapDistance: CGFloat = 6
@@ -57,7 +57,7 @@ enum PanelMetrics {
     static let appIconOverflow: CGFloat = 14
 
     static let selectionBorderWidth: CGFloat = 4
-    // 出入场动画按原版录屏逐帧量得（Docs/08 第 9.6 节）：
+    // 出入场动画按原版录屏逐帧量得（Docs/归档/调研/08 第 9.6 节）：
     // 出现是从屏幕底边以下整体滑入，约 120 ms，每帧剩余距离减半；消失是向下滑出，约 150 ms，先慢后快。都没有淡入淡出。
     static let showDuration: TimeInterval = 0.18
     static let hideDuration: TimeInterval = 0.15
@@ -67,7 +67,7 @@ enum PanelMetrics {
     static let contentBackgroundColor = NSColor(name: "XPasteContentBackground") { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(srgbRed: 0x1A / 255.0, green: 0x1A / 255.0, blue: 0x1A / 255.0, alpha: 1) : .white
     }
-    // 预览浮层（Docs/08 第 5.4 节）。尺寸是浮层可见部分，不含系统加的阴影边距和箭头。
+    // 预览浮层（Docs/归档/调研/08 第 5.4 节）。尺寸是浮层可见部分，不含系统加的阴影边距和箭头。
     static let previewTextSize = NSSize(width: 390, height: 316)
     static let previewColorSize = NSSize(width: 460, height: 369)
     static let previewHeaderHeight: CGFloat = 38
@@ -102,7 +102,7 @@ enum PanelMetrics {
                height: (content.height + previewHeaderHeight + previewFooterHeight).rounded(.up))
     }
 
-    /// 图片预览的内容区尺寸（Docs/08 第 9.12 节）：一个像素按一个点算，只缩小不放大；
+    /// 图片预览的内容区尺寸（Docs/归档/调研/08 第 9.12 节）：一个像素按一个点算，只缩小不放大；
     /// 最大是屏幕的一半，最小与文本预览相同。保留小数，取整留给 `previewSize(forContent:)`。
     static func previewImageContentSize(pixelSize: NSSize, screenSize: NSSize) -> NSSize {
         let limit = NSSize(width: screenSize.width / 2, height: screenSize.height / 2)
@@ -115,7 +115,7 @@ enum PanelMetrics {
     static let previewButtonFooterHeight: CGFloat = 45
     static let previewTwoLineFooterHeight: CGFloat = 55
 
-    /// 链接和文件预览的浮层尺寸（Docs/08 第 9.13 节）：固定为图片预览的最大尺寸，在 1800 × 1169 的屏幕上是 910 × 661。
+    /// 链接和文件预览的浮层尺寸（Docs/归档/调研/08 第 9.13 节）：固定为图片预览的最大尺寸，在 1800 × 1169 的屏幕上是 910 × 661。
     static func previewLargeSize(screenSize: NSSize) -> NSSize {
         NSSize(width: (screenSize.width / 2).rounded(.down) + previewContentInset * 2,
                height: (screenSize.height / 2 + previewHeaderHeight + previewFooterHeight).rounded(.up))
@@ -126,7 +126,7 @@ enum PanelMetrics {
         return min(1, box.width / pixelSize.width, box.height / pixelSize.height)
     }
 
-    /// 拖动卡片时跟着鼠标走的图略微透明；离开卡片区（拖到工具栏一带）后缩到约六成（Docs/08 第 9.17、9.25 节）。
+    /// 拖动卡片时跟着鼠标走的图略微透明；离开卡片区（拖到工具栏一带）后缩到约六成（Docs/归档/调研/08 第 9.17、9.25 节）。
     static let dragImageScale: CGFloat = 0.58
     static let dragImageOpacity: CGFloat = 0.85
 

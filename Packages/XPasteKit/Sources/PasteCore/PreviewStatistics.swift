@@ -4,7 +4,7 @@ import Foundation
 public struct TextStatistics: Sendable, Equatable {
     /// UTF-16 码元数，与卡片底栏口径一致。
     public let characters: Int
-    /// 按空格切分的段数。原版对中文和连字符都不拆词，换行也不算分隔（Docs/08 第 9.11 节）。
+    /// 按空格切分的段数。原版对中文和连字符都不拆词，换行也不算分隔（Docs/归档/调研/08 第 9.11 节）。
     public let words: Int
     public let lines: Int
 

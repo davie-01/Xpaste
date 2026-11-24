@@ -207,7 +207,7 @@ final class ClipCardItem: NSCollectionViewItem {
             footerBadge.frame = NSRect(x: (side - width) / 2, y: m.cardFooterBottom - 2, width: width, height: 21)
             footerLabel.frame = footerBadge.frame.insetBy(dx: 6, dy: 2)
         } else if kind == .file {
-            // 路径最多两行（Docs/08 第 5.3 节，L17）。
+            // 路径最多两行（Docs/归档/调研/08 第 5.3 节，L17）。
             footerLabel.frame = NSRect(x: pad, y: m.cardFooterBottom, width: side - pad * 2, height: 32)
         } else {
             footerLabel.frame = NSRect(x: pad, y: m.cardFooterBottom, width: side - pad * 2, height: 17)
@@ -456,7 +456,7 @@ final class ClipCardItem: NSCollectionViewItem {
     }
 }
 
-/// 图片卡片的衬底：8 pt 的深浅方格，等比缩放留出的边和图片的透明区域都显示它（Docs/08 第 5.3 节，L18）。预览里的是半透明的，见 `CheckerboardView`。
+/// 图片卡片的衬底：8 pt 的深浅方格，等比缩放留出的边和图片的透明区域都显示它（Docs/归档/调研/08 第 5.3 节，L18）。预览里的是半透明的，见 `CheckerboardView`。
 /// 两种颜色都是从原版截图里取的：深色 #282828 / #363636，浅色 #FFFFFF / #F4F4F4。
 final class CardCheckerboardView: NSView {
     private static let square: CGFloat = 8

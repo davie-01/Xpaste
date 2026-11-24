@@ -7,7 +7,7 @@ public typealias MCPApprover = @Sendable (_ clientName: String) async -> Bool
 
 /// MCP 服务的全部请求处理：OAuth 授权、会话与工具调用。不涉及网络，便于单测；网络部分见 `MCPService`。
 ///
-/// 与原版的差别（Docs/08 第 9.23 节）：批准必须在 XPaste 自己的确认框里完成，浏览器页面只提示去 XPaste 确认，
+/// 与原版的差别（Docs/归档/调研/08 第 9.23 节）：批准必须在 XPaste 自己的确认框里完成，浏览器页面只提示去 XPaste 确认，
 /// 本机其他程序提交网页表单拿不到令牌；401 附带 `WWW-Authenticate`；校验 Host 与 Origin，防止网页经 DNS 重绑定访问。
 public actor MCPServer {
     public static let protocolVersions = ["2025-11-25", "2025-06-18", "2025-03-26"]

@@ -112,7 +112,7 @@ struct AppPreferences: @unchecked Sendable {
         get { defaults.bool(forKey: "stackReversed") }
         nonmutating set { defaults.set(newValue, forKey: "stackReversed") }
     }
-    /// Stack 的“以纯文本粘贴”：打开后 ⌘V、双击、全部粘贴都只粘文本（Docs/验收记录/Stack改版.md S10）。
+    /// Stack 的“以纯文本粘贴”：打开后 ⌘V、双击、全部粘贴都只粘文本（Docs/归档/验收记录/Stack改版.md S10）。
     var stackPastePlainText: Bool {
         get { defaults.bool(forKey: "stackPastePlainText") }
         nonmutating set { defaults.set(newValue, forKey: "stackPastePlainText") }

@@ -2,7 +2,7 @@ import AppKit
 import PasteCore
 
 /// Stack 窗口里的列表：每一项是一张圆角卡片，可以双击插队粘贴、点 × 删除、拖动排序、拖到别的应用，
-/// 也接收别的应用和面板拖进来的内容（Docs/验收记录/Stack改版.md S2、S5、S6、S8、S11、S12）。
+/// 也接收别的应用和面板拖进来的内容（Docs/归档/验收记录/Stack改版.md S2、S5、S6、S8、S11、S12）。
 @MainActor
 final class StackListView: NSView {
     /// 一行要显示的内容。

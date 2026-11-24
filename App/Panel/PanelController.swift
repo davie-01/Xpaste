@@ -559,7 +559,7 @@ final class PanelController: NSObject {
         defer { Log.signposter.endInterval("panel.show", signpost) }
         let front = NSWorkspace.shared.frontmostApplication
         targetApp = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? lastExternalApp : front
-        // 屏幕选择先用鼠标所在屏，原版规则待实测（Docs/09 M0 待答问题）。
+        // 屏幕选择先用鼠标所在屏，原版规则待实测（Docs/归档/09 M0 待答问题）。
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
         // 用屏幕全尺寸而不是可用区域：面板贴屏幕底边并盖住 Dock。
         let frame = NSRect(x: screen.frame.minX, y: screen.frame.minY, width: screen.frame.width, height: panelHeight)
@@ -1344,7 +1344,7 @@ final class PanelController: NSObject {
             applySelection(scroll: false)
         }
 
-        // 多选时菜单和单选一样（Docs/08 第 9.16 节，L19、L20）：粘贴、复制、删除、固定、分享作用于全部选中项，其余作用于点中的这一条。
+        // 多选时菜单和单选一样（Docs/归档/调研/08 第 9.16 节，L19、L20）：粘贴、复制、删除、固定、分享作用于全部选中项，其余作用于点中的这一条。
         let clips = selectedIDs.count > 1 ? selectedClips : [clip]
         let menu = NSMenu()
         let targetName = targetApp?.localizedName ?? String(localized: "当前应用")
@@ -2100,7 +2100,7 @@ final class PanelController: NSObject {
         }
     }
 
-    /// 右键菜单的“创建 Stack”/“添加到 Stack”，右侧标出 Stack 快捷键（Docs/验收记录/Stack改版.md S4）。
+    /// 右键菜单的“创建 Stack”/“添加到 Stack”，右侧标出 Stack 快捷键（Docs/归档/验收记录/Stack改版.md S4）。
     private func stackMenuItem(for clips: [ClipSummary]) -> NSMenuItem {
         let title = isStackOpen() ? String(localized: "添加到 Stack") : String(localized: "创建 Stack")
         let item = ClosureMenuItem(title) { [weak self] in self?.addToStack(clips) }

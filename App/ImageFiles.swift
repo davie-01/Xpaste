@@ -2,7 +2,7 @@ import AppKit
 import ClipboardKit
 
 /// 把图片条目另存成临时 PNG，并在 item 上附上文件地址，这样能粘贴或拖进访达。
-/// 原版多选图片复制时就是这样做的（Docs/08 第 9.16 节，L32）；拖出图片卡片也照此处理（L34）。
+/// 原版多选图片复制时就是这样做的（Docs/归档/调研/08 第 9.16 节，L32）；拖出图片卡片也照此处理（L34）。
 enum ImageFiles {
     static let folder = FileManager.default.temporaryDirectory.appendingPathComponent("XPaste-Images", isDirectory: true)
 

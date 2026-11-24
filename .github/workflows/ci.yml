@@ -11,7 +11,7 @@ jobs:
     # macos-26 上只有 Xcode 26，编不了部署目标为 macOS 27 的工程。
     runs-on: xcode-27
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Xcode version
         run: xcodebuild -version
       - name: Unit tests

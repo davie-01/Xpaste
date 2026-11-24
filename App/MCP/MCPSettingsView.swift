@@ -63,7 +63,7 @@ final class MCPSettingsModel {
     }
 }
 
-/// 三种连接引导。深链和桌面扩展包不做（Docs/09 第 9 节）。
+/// 三种连接引导。深链和桌面扩展包不做（Docs/归档/09 第 9 节）。
 enum MCPGuide: Identifiable {
     case claudeCode(url: String)
     case config(url: String)
@@ -85,7 +85,7 @@ struct MCPSettingsView: View {
     @State private var showingAdvanced = false
 
     var body: some View {
-        // 版式按原版开启态（Docs/08 第 9.24 节）：地址行在开关分组里，连接菜单在列表下方靠右。
+        // 版式按原版开启态（Docs/归档/调研/08 第 9.24 节）：地址行在开关分组里，连接菜单在列表下方靠右。
         VStack(alignment: .leading, spacing: 16) {
             VStack(spacing: 0) {
                 HStack(alignment: .top, spacing: 10) {

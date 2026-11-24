@@ -460,7 +460,7 @@ private final class PreviewViewController: NSViewController {
         }
         titleLabel.frame = NSRect(x: 31, y: 11, width: max(0, right - 31), height: 18)
 
-        // 底栏：右侧有按钮时高 45，左侧文字折成两行时高 55，否则 38（Docs/08 第 9.13 节）。
+        // 底栏：右侧有按钮时高 45，左侧文字折成两行时高 55，否则 38（Docs/归档/调研/08 第 9.13 节）。
         var labelWidth = bounds.width - 22
         if !footerButton.isHidden {
             footerButton.sizeToFit()
