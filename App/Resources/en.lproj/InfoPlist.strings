@@ -1,0 +1,5 @@
+"NSDocumentsFolderUsageDescription" = "XPaste needs access to this folder to paste and preview files you copied from it.";
+"NSDesktopFolderUsageDescription" = "XPaste needs access to this folder to paste and preview files you copied from it.";
+"NSDownloadsFolderUsageDescription" = "XPaste needs access to this folder to paste and preview files you copied from it.";
+"NSRemovableVolumesUsageDescription" = "XPaste needs access to removable disks to paste and preview files you copied from them.";
+"NSNetworkVolumesUsageDescription" = "XPaste needs access to network disks to paste and preview files you copied from them.";

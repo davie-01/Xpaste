@@ -1,0 +1,30 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    # 需要带 Xcode 27 的 macOS 27 runner。
+    runs-on: macos-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Unit tests
+        run: swift test --package-path Packages/XPasteKit
+      - name: String and compliance checks
+        run: |
+          Tools/check-strings.sh
+          Tools/check-compliance.sh
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Build app
+        run: >
+          xcodebuild -project XPaste.xcodeproj -scheme XPaste -configuration Debug
+          -derivedDataPath build/DerivedData
+          CODE_SIGNING_ALLOWED=NO build

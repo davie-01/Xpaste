@@ -1,0 +1,36 @@
+name: Package
+# 手动运行：打一个 ad-hoc 签名的发布包，作为构建产物上传（不发布）。
+# 推送 v* 标签：同样打包，并建一个草稿 Release，确认后再手动发布。
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Build and package
+        run: Tools/package.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XPaste-arm64
+          path: dist/*
+          if-no-files-found: error
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --draft --title "XPaste $GITHUB_REF_NAME"
+          --notes "Ad-hoc signed, not notarized. See README for installation."

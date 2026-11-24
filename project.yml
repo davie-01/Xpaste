@@ -1,0 +1,80 @@
+name: XPaste
+options:
+  deploymentTarget:
+    macOS: "27.0"
+  createIntermediateGroups: true
+  developmentLanguage: zh-Hans
+packages:
+  XPasteKit:
+    path: Packages/XPasteKit
+# Profile 是测量用的构建：Release 的优化，加上 BENCH 条件。这种构建只能以测量模式启动（见 App/Bench）。
+configs:
+  Debug: debug
+  Release: release
+  Profile: release
+settings:
+  configs:
+    Profile:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: BENCH
+  base:
+    ARCHS: arm64
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "27.0"
+targets:
+  XPaste:
+    type: application
+    platform: macOS
+    sources:
+      - App
+    dependencies:
+      - package: XPasteKit
+        product: ClipboardKit
+      - package: XPasteKit
+        product: PasteCore
+      - package: XPasteKit
+        product: MCPKit
+      # 给只支持 stdio 的 AI 工具用的转接程序，放在 Contents/MacOS 里。
+      - target: xpaste-mcp-stdio
+        embed: true
+        copy:
+          destination: executables
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mars.XPaste
+        PRODUCT_NAME: XPaste
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        INFOPLIST_KEY_CFBundleDisplayName: XPaste
+        # 应用图标是 App/Resources/AppIcon.icon（Icon Composer 格式，带浅色和深色两种外观）。
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        INFOPLIST_KEY_NSHumanReadableCopyright: "MIT License"
+        INFOPLIST_KEY_NSDocumentsFolderUsageDescription: "XPaste 需要访问此文件夹，才能粘贴和预览你从这里复制的文件。"
+        INFOPLIST_KEY_NSDesktopFolderUsageDescription: "XPaste 需要访问此文件夹，才能粘贴和预览你从这里复制的文件。"
+        INFOPLIST_KEY_NSDownloadsFolderUsageDescription: "XPaste 需要访问此文件夹，才能粘贴和预览你从这里复制的文件。"
+        # 从移动硬盘、U 盘或网络共享上复制的文件，粘贴和预览时系统同样会询问。
+        INFOPLIST_KEY_NSRemovableVolumesUsageDescription: "XPaste 需要访问可移除磁盘，才能粘贴和预览你从上面复制的文件。"
+        INFOPLIST_KEY_NSNetworkVolumesUsageDescription: "XPaste 需要访问网络磁盘，才能粘贴和预览你从上面复制的文件。"
+        ENABLE_HARDENED_RUNTIME: YES
+        # 辅助功能授权绑定签名，开发期固定用同一张证书，避免每次构建后授权失效
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: 32N23TW5BT
+  xpaste-mcp-stdio:
+    type: tool
+    platform: macOS
+    sources:
+      - StdioBridge
+    dependencies:
+      - package: XPasteKit
+        product: MCPBridge
+    settings:
+      base:
+        PRODUCT_NAME: xpaste-mcp-stdio
+        PRODUCT_BUNDLE_IDENTIFIER: com.mars.XPaste.mcp-stdio
+        SKIP_INSTALL: YES
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: 32N23TW5BT

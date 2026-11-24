@@ -1,0 +1,15 @@
+# 含原版 Paste 界面与个人剪贴板内容，仅本地参考，不入库
+Reference/
+.DS_Store
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# XcodeGen 生成，不入库
+*.xcodeproj
+.build/
+.swiftpm/
+
+# 发布包（Tools/package.sh）
+dist/
