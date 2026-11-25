@@ -16,6 +16,8 @@ public final class PasteboardMonitor {
     }
     public var onCapture: ((ClipSnapshot) -> Void)?
     public var onSkip: ((CapturePolicy.SkipReason) -> Void)?
+    /// 计数变了，但重试完仍读不到可用的数据，这次复制放弃、不会再读（L168：以前这条路径不留任何痕迹）。参数是那次的 changeCount。
+    public var onGiveUp: ((Int) -> Void)?
     /// 取采集时刻的来源应用；默认用前台应用。
     public var sourceProvider: () -> ClipSource = {
         let app = NSWorkspace.shared.frontmostApplication
@@ -169,7 +171,10 @@ public final class PasteboardMonitor {
     }
 
     private func scheduleRetry(generation: Int) {
-        guard retryIndex < retryDelays.count else { return }
+        guard retryIndex < retryDelays.count else {
+            onGiveUp?(generation)
+            return
+        }
         let delay = retryDelays[retryIndex]
         retryIndex += 1
         retryTask = Task { [weak self] in

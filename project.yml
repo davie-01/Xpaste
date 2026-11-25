@@ -7,6 +7,12 @@ options:
 packages:
   XPasteKit:
     path: Packages/XPasteKit
+  # 应用内更新：只在启动时静默检查一次，其余靠用户手动“检查更新…”（见 App/Updates.swift）。
+  # 写死版本：依赖的锁定清单不入库，版本由这里决定，原因见 Docs/design.md“依赖版本的锁定”。
+  # 升级时改这里，同时更新 THIRD_PARTY_NOTICES.md。
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: "2.10.1"
 # Profile 是测量用的构建：Release 的优化，加上 BENCH 条件。这种构建只能以测量模式启动（见 App/Bench）。
 configs:
   Debug: debug
@@ -33,6 +39,7 @@ targets:
         product: PasteCore
       - package: XPasteKit
         product: MCPKit
+      - package: Sparkle
       # 给只支持 stdio 的 AI 工具用的转接程序，放在 Contents/MacOS 里。
       - target: xpaste-mcp-stdio
         embed: true
@@ -42,9 +49,11 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mars.XPaste
         PRODUCT_NAME: XPaste
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
+        # Sparkle 的键（更新源、公钥、关闭定时检查）没有 INFOPLIST_KEY_ 写法，放在这个文件里，和生成的键合并。
+        INFOPLIST_FILE: App/Info.plist
         INFOPLIST_KEY_LSUIElement: YES
         INFOPLIST_KEY_CFBundleDisplayName: XPaste
         # 应用图标是 App/Resources/AppIcon.icon（Icon Composer 格式，带浅色和深色两种外观）。

@@ -9,7 +9,7 @@ final class SettingsWindowController: NSWindowController {
          onEraseHistory: @escaping () throws -> Void, onPrivacyChange: @escaping () -> Void = {},
          onKeyboardChange: @escaping (KeyboardSettings) throws -> Void = { _ in },
          onRecording: @escaping (Bool) -> String? = { _ in nil }, mcp: MCPSettingsModel? = nil,
-         onRecognizeAgain: @escaping () throws -> Int = { 0 }) {
+         onRecognizeAgain: @escaping () throws -> Int = { 0 }, onHelp: @escaping () -> Void = {}) {
         let window = StandardWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 592),
                               styleMask: [.titled, .closable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         WindowSharing.apply(to: window, preferences: preferences)
@@ -18,7 +18,7 @@ final class SettingsWindowController: NSWindowController {
         window.titleVisibility = .hidden
         window.isReleasedWhenClosed = false
         super.init(window: window)
-        let hostingView = NSHostingView(rootView: SettingsView(navigation: navigation, preferences: preferences, onRetention: onRetention, onEraseHistory: onEraseHistory, onPrivacyChange: onPrivacyChange, onKeyboardChange: onKeyboardChange, onRecording: onRecording, mcp: mcp, onRecognizeAgain: onRecognizeAgain))
+        let hostingView = makeHostingView(SettingsView(navigation: navigation, preferences: preferences, onRetention: onRetention, onEraseHistory: onEraseHistory, onPrivacyChange: onPrivacyChange, onKeyboardChange: onKeyboardChange, onRecording: onRecording, mcp: mcp, onRecognizeAgain: onRecognizeAgain, onHelp: onHelp))
         // 固定的是整窗尺寸；避免 SwiftUI 将固定内容高度再加上系统标题栏作为最小窗口高度。
         hostingView.sizingOptions = []
         window.contentView = hostingView
@@ -77,6 +77,19 @@ final class TrustStatus {
     }
 }
 
+/// 应用里每个 SwiftUI 窗口（设置、帮助、引导、直接粘贴确认）都用这个宿主装根视图，整棵视图树统一关掉系统的蓝色键盘焦点框，
+/// 新窗口不用再一个个控件加 `.focusEffectDisabled()`（用户要求全局去掉，2026-11-25）。按钮靠悬停、按下和选中底色给出反馈。
+/// AppKit 这边：系统提示框在 `AlertStyle`，面板和录制框的文本框各自设了 `focusRingType = .none`。
+@MainActor
+func makeHostingView<Content: View>(_ content: Content) -> NSHostingView<FocusFreeRoot<Content>> {
+    NSHostingView(rootView: FocusFreeRoot(content: content))
+}
+
+struct FocusFreeRoot<Content: View>: View {
+    let content: Content
+    var body: some View { content.focusEffectDisabled() }
+}
+
 /// 设置、引导这类普通窗口。应用菜单里没有“窗口”菜单，⌘W 在这里处理。
 final class StandardWindow: NSWindow {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -127,6 +140,7 @@ private struct SettingsView: View {
     let onRecording: (Bool) -> String?
     let mcp: MCPSettingsModel?
     let onRecognizeAgain: () throws -> Int
+    let onHelp: () -> Void
     private var page: SettingsPage {
         get { navigation.page }
         nonmutating set { navigation.page = newValue }
@@ -161,7 +175,7 @@ private struct SettingsView: View {
                             .background(page == item ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 6))
                             .foregroundStyle(page == item ? Color.white : Color.primary)
                             .contentShape(Rectangle())
-                    }.buttonStyle(.plain).focusEffectDisabled()
+                    }.buttonStyle(.plain)
                         // 选中的页只靠底色区分，VoiceOver 要另外告诉它。
                         .accessibilityAddTraits(page == item ? .isSelected : [])
                 }
@@ -171,6 +185,11 @@ private struct SettingsView: View {
             Divider()
             VStack(alignment: .leading, spacing: 0) {
                 Text(page.title).font(.system(size: 17, weight: .bold)).padding(.leading, 10).padding(.bottom, 18)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // 右上角系统样式的“?”，打开 XPaste 帮助（菜单栏图标的菜单里不再放帮助）。叠在标题行上，不改标题的位置。
+                    .overlay(alignment: .topTrailing) {
+                        HelpLink { onHelp() }.help(String(localized: "XPaste 帮助")).offset(y: -3)
+                    }
                 if page == .general {
                     ScrollView {
                         GeneralSettingsView(preferences: preferences, onRetention: onRetention, onEraseHistory: onEraseHistory,

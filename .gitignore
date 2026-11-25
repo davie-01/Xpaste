@@ -8,6 +8,9 @@ xcuserdata/
 
 # XcodeGen 生成，不入库
 *.xcodeproj
+# 依赖的版本锁定清单：xcodebuild 构建应用时会把 Sparkle 写进来，swift test 又按包自己的依赖去掉，来回改写。
+# 两个依赖的版本都在配置里写死（Package.swift、project.yml），这份清单只是本机的临时文件。
+Packages/XPasteKit/Package.resolved
 .build/
 .swiftpm/
 

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 只用于 ad-hoc 签名的发布包（Tools/package.sh）。ad-hoc 签名没有 Team ID，开着 hardened runtime 的库验证时，
+	     嵌入的 Sparkle.framework 会因“Team ID 不同”被拒绝加载，应用一启动就退出。只关库验证，hardened runtime 的其它保护保留。
+	     用证书签名的构建不需要它。 -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+</dict>
+</plist>

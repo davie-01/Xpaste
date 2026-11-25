@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }, onPrivacyChange: { [weak self] in self?.applyPrivacySettings() }, onKeyboardChange: { [weak self] in try self?.shortcutRegistry.apply($0) },
        onRecording: { [weak self] in self?.setShortcutRecording($0) }, mcp: mcpSettings, onRecognizeAgain: { [weak self] in
         try self?.recognizeImagesAgain() ?? 0
-    })
+    }, onHelp: { [weak self] in self?.helpController.present() })
     }
 
     private lazy var onboardingWindow = OnDemandWindow { [unowned self] in
@@ -141,6 +141,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         monitor.policy = AppPreferences.shared.capturePolicy
         monitor.onCapture = { [weak self] in self?.capture($0) }
+        // 没进历史的复制都留一行日志（L168）：被策略跳过、数据一直没准备好而放弃。只记原因，不记内容。
+        // 自己写回的那种每次从面板粘贴都可能有，记成 debug（不落盘），其余记 notice，事后用 log show 能查到。
+        monitor.onSkip = { reason in
+            if reason == .ownWrite {
+                Log.capture.debug("跳过一次复制：自己写回的内容")
+            } else {
+                Log.capture.notice("跳过一次复制：\(String(describing: reason), privacy: .public)")
+            }
+        }
+        monitor.onGiveUp = { changeCount in
+            Log.capture.notice("放弃一次复制：剪贴板计数 \(changeCount, privacy: .public) 变了，但重试后仍读不到可用的数据")
+        }
         #if DEBUG
         if Self.usesRealClipboard { monitor.start() }
         #else
@@ -179,8 +191,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         panelController.onSettings = { [weak self] in self?.showSettings() }
-        panelController.onAbout = { [weak self] in self?.showAbout() }
-        panelController.onHelp = { [weak self] in self?.showHelp() }
         // SwiftUI 的提示框、系统面板等不经本应用创建的窗口，成为 key 时补上共享标记。
         NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey(_:)), name: NSWindow.didBecomeKeyNotification, object: nil)
         setUpApplicationMenu()
@@ -188,6 +198,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerHotKey()
         scheduleRetention()
         startMCP()
+        Updates.shared.start()
         let showsOnboarding = shouldShowOnboarding
         if showsOnboarding { onboardingController.present() }
         #if DEBUG
@@ -562,29 +573,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 锁屏、切换用户（审查 10，用户决定）：期间暂停记录，收起面板和预览；回来自动恢复。Stack 保留。
     /// 用户自己的暂停不受影响：锁屏前已暂停的，解锁后仍是暂停。
+    ///
+    /// 锁屏、解锁是分布式通知，必须注册成“立即送达”（L168）：AppKit 在应用被激活过、又退到后台后会暂停接收分布式通知，
+    /// 同名的合并、等下次激活才补发，补发顺序还可能是“先解锁、后锁”。XPaste 打开设置、帮助、说明框时会被激活，
+    /// 之后就收不到实时的锁屏和解锁，状态可能停在“锁着”，采集被悄悄暂停（小样实测复现）。
+    /// 切换用户的通知走 NSWorkspace 的普通通知中心，不受影响。
     private func observeSessionActivity() {
         let workspace = NSWorkspace.shared.notificationCenter
+        workspace.addObserver(forName: NSWorkspace.sessionDidResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setSessionInactive(true, because: "切换到别的用户") }
+        }
+        workspace.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.setSessionInactive(false, because: "切换回本用户") }
+        }
         let distributed = DistributedNotificationCenter.default()
-        let inactive: [(NotificationCenter, Notification.Name)] = [
-            (workspace, NSWorkspace.sessionDidResignActiveNotification), (distributed, .init("com.apple.screenIsLocked")),
-        ]
-        let active: [(NotificationCenter, Notification.Name)] = [
-            (workspace, NSWorkspace.sessionDidBecomeActiveNotification), (distributed, .init("com.apple.screenIsUnlocked")),
-        ]
-        for (center, name) in inactive {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setSessionInactive(true) }
-            }
-        }
-        for (center, name) in active {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setSessionInactive(false) }
-            }
-        }
+        distributed.addObserver(self, selector: #selector(screenDidLock(_:)), name: Self.screenLocked, object: nil,
+                                suspensionBehavior: .deliverImmediately)
+        distributed.addObserver(self, selector: #selector(screenDidUnlock(_:)), name: Self.screenUnlocked, object: nil,
+                                suspensionBehavior: .deliverImmediately)
     }
 
-    private func setSessionInactive(_ inactive: Bool) {
+    static let screenLocked = Notification.Name("com.apple.screenIsLocked")
+    static let screenUnlocked = Notification.Name("com.apple.screenIsUnlocked")
+
+    @objc private func screenDidLock(_ notification: Notification) { setSessionInactive(true, because: "锁屏") }
+    @objc private func screenDidUnlock(_ notification: Notification) { setSessionInactive(false, because: "解锁") }
+
+    private func setSessionInactive(_ inactive: Bool, because reason: String) {
         guard sessionInactive != inactive else { return }
+        Log.capture.notice("会话\(inactive ? "离开" : "回来", privacy: .public)（\(reason, privacy: .public)）")
         sessionInactive = inactive
         if inactive { panelController.hide() }
         applyCapturePause()
@@ -593,7 +610,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 记录是否暂停 = 用户暂停或会话不在前台。只在状态真的变了时通知监视器（它会对齐计数，暂停期间的复制不补录）。
     private func applyCapturePause() {
         let paused = userPaused || sessionInactive
-        if monitor.isPaused != paused { monitor.setPaused(paused) }
+        guard monitor.isPaused != paused else { return }
+        if paused {
+            let why = [userPaused ? "手动暂停" : nil, sessionInactive ? "锁屏或切换用户" : nil].compactMap { $0 }.joined(separator: "、")
+            Log.capture.notice("暂停记录：\(why, privacy: .public)")
+        } else {
+            Log.capture.notice("恢复记录")
+        }
+        monitor.setPaused(paused)
     }
 
     /// 暂停采集。给了时长就到点自动恢复；暂停期间的复制不补录。

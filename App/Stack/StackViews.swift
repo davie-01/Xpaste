@@ -3,6 +3,12 @@ import PasteCore
 
 /// Stack 窗口里的列表：每一项是一张圆角卡片，可以双击插队粘贴、点 × 删除、拖动排序、拖到别的应用，
 /// 也接收别的应用和面板拖进来的内容（Docs/归档/验收记录/Stack改版.md S2、S5、S6、S8、S11、S12）。
+///
+/// 交互动画（用户真机第二轮，2026-11-24）：
+/// - 指针移到哪张卡片上，它略微放大、提亮，带一层柔和的阴影；
+/// - 在窗口里拖动排序时拖的是卡片本身：它浮起来（更大、阴影更重）跟着指针上下走，其余卡片平滑地让位，松手后缓缓落进空位；
+///   卡片是实心的，浮起的那张盖住下面的，文字不会叠在一起看不清；
+/// - 指针拖出窗口才转成系统拖拽（拖进别的应用），取消时在松手处冒云团。
 @MainActor
 final class StackListView: NSView {
     /// 一行要显示的内容。
@@ -31,14 +37,20 @@ final class StackListView: NSView {
 
     static let width: CGFloat = StackController.width
     static let inset: CGFloat = 10
-    /// 第一行上面留的空：× 压在卡片右上角、有一半在卡片外面，第一行的不能被裁掉。
-    static let topInset: CGFloat = 6
+    /// 第一行上面留的空：× 压在卡片右上角、有一部分在卡片外面，悬停时卡片还会放大，第一行的不能被裁掉。
+    static let topInset: CGFloat = 8
     static let spacing: CGFloat = 6
     static let minRowHeight: CGFloat = 44
     static let accessoryWidth: CGFloat = 44
     static let font = NSFont.systemFont(ofSize: 13)
     static let rowType = NSPasteboard.PasteboardType("com.mars.XPaste.stack-row")
-    static let removeSide: CGFloat = 18
+    static let removeSide: CGFloat = 14
+    /// 悬停和浮起时卡片每边放大多少。
+    static let hoverGrowth = NSSize(width: 2, height: 1.5)
+    static let liftGrowth = NSSize(width: 4, height: 3)
+    /// 让位、落位的动画：0.24 秒，开头快、结尾慢慢停住。
+    static let slideDuration: TimeInterval = 0.24
+    static let slideTiming = CAMediaTimingFunction(controlPoints: 0.2, 0.85, 0.25, 1)
 
     var onDoubleClick: ((Int) -> Void)?
     var onRemove: ((Int) -> Void)?
@@ -60,13 +72,19 @@ final class StackListView: NSView {
     private let noticeView = StackNoticeView()
     private let placeholderLabel = NSTextField(labelWithString: "")
     private let insertionLine = NSView()
-    /// 指针所在那一行右上角的 ×（原版视频 00:16、00:18）。放在列表上而不是行里，才能有一半露在卡片外面。
+    /// 指针所在那一行右上角的 ×。放在列表上而不是行里，才能有一部分露在卡片外面。
     private let removeButton = StackRemoveButton()
-    private var hoveredUID: Int? { didSet { if hoveredUID != oldValue { placeRemoveButton() } } }
+    private var hoveredUID: Int? {
+        didSet { if hoveredUID != oldValue { layoutRows(animated: true) } }
+    }
 
-    /// 正在拖的本窗口的行；拖动期间它的位置空着。
+    /// 在窗口里拖动排序的那一行（卡片本身跟着指针走）。
+    private var liftedUID: Int?
+    /// 按下时指针离卡片上边多远，拖动时保持不变。
+    private var grabOffset: CGFloat = 0
+    /// 正在拖的本窗口的行（窗口里拖着或已转成系统拖拽）；它原来的位置按 `dropIndex` 空出来。
     private var draggingUID: Int?
-    /// 拖动经过窗口时要放下的位置；本窗口的行按它让出空位，外来的内容在这里画一条插入线。
+    /// 要放下的位置：本窗口的行按它让出空位，外来的内容在这里画一条插入线。
     private var dropIndex: Int?
     private var droppedInside = false
     /// false 是拖动中按了 Esc：什么操作都不允许，任何目标都不会接收（同面板卡片，L110）。
@@ -156,6 +174,20 @@ final class StackListView: NSView {
         Self.topInset + (notice == nil ? 0 : StackNoticeView.height(for: noticeView.text) + Self.spacing)
     }
 
+    // MARK: 布局
+
+    /// 各行不放大、不让位时的位置（列表从上到下排，拖着的那一行不计）。
+    private func restingFrames(skipping skipped: Int?) -> [(uid: Int, frame: NSRect)] {
+        var y = firstRowY
+        var result: [(Int, NSRect)] = []
+        for row in rows where row.uid != skipped {
+            let height = Self.height(of: row)
+            result.append((row.uid, NSRect(x: Self.inset, y: y, width: Self.width - Self.inset * 2, height: height)))
+            y += height + Self.spacing
+        }
+        return result
+    }
+
     private func layoutRows(animated: Bool) {
         let rowWidth = Self.width - Self.inset * 2
         if notice != nil {
@@ -169,23 +201,43 @@ final class StackListView: NSView {
         insertionLine.isHidden = true
         var visibleIndex = 0
         let gap = draggingUID.flatMap { uid in rows.first { $0.uid == uid } }.map { Self.height(of: $0) + Self.spacing }
+        var targets: [(StackRowView, NSRect, StackRowView.Emphasis)] = []
         for row in rows {
             guard let view = rowViews[row.uid] else { continue }
             if row.uid == draggingUID {
-                view.isHidden = true
+                // 窗口里拖着的那张跟着指针走（位置由拖动处理来定）；转成系统拖拽后藏起来，位置空着。
+                view.isHidden = liftedUID != row.uid
                 continue
             }
             if visibleIndex == dropIndex {
                 if let gap { y += gap } else { showInsertionLine(at: y - Self.spacing / 2) }
             }
             view.isHidden = false
-            let frame = NSRect(x: Self.inset, y: y, width: rowWidth, height: Self.height(of: row))
-            if animated { view.animator().frame = frame } else { view.frame = frame }
-            y += frame.height + Self.spacing
+            let resting = NSRect(x: Self.inset, y: y, width: rowWidth, height: Self.height(of: row))
+            let hovered = row.uid == hoveredUID && draggingUID == nil
+            let grow = hovered ? Self.hoverGrowth : .zero
+            targets.append((view, resting.insetBy(dx: -grow.width, dy: -grow.height), hovered ? .hover : .normal))
+            y += resting.height + Self.spacing
             visibleIndex += 1
         }
         if dropIndex == visibleIndex, gap == nil, dropIndex != nil { showInsertionLine(at: y - Self.spacing / 2) }
-        placeRemoveButton()
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Self.slideDuration
+                context.timingFunction = Self.slideTiming
+                context.allowsImplicitAnimation = true
+                for (view, frame, emphasis) in targets {
+                    view.animator().frame = frame
+                    view.setEmphasis(emphasis, animated: true)
+                }
+            }
+        } else {
+            for (view, frame, emphasis) in targets {
+                view.frame = frame
+                view.setEmphasis(emphasis, animated: false)
+            }
+        }
+        placeRemoveButton(animated: animated)
     }
 
     private func showInsertionLine(at y: CGFloat) {
@@ -203,26 +255,30 @@ final class StackListView: NSView {
 
     override func mouseEntered(with event: NSEvent) { updateHover(event) }
     override func mouseMoved(with event: NSEvent) { updateHover(event) }
-    override func mouseExited(with event: NSEvent) { hoveredUID = nil }
+    override func mouseExited(with event: NSEvent) { if draggingUID == nil { hoveredUID = nil } }
 
     private func updateHover(_ event: NSEvent) {
-        guard draggingUID == nil else { hoveredUID = nil; return }
+        guard draggingUID == nil else { return }
         let point = convert(event.locationInWindow, from: nil)
-        // 指针挪到露在卡片外面的那半个 × 上，仍算在这一行上。
+        // 指针挪到露在卡片外面的那部分 × 上，仍算在这一行上。
         if !removeButton.isHidden, removeButton.frame.contains(point) { return }
         hoveredUID = uid(at: point)
     }
 
-    /// × 压在卡片右上角，圆心在角内一点，有一半露在卡片外面（原版视频 00:16、00:18）。
-    private func placeRemoveButton() {
-        guard draggingUID == nil, let hoveredUID, let view = rowViews[hoveredUID], !view.isHidden else {
+    /// × 压在卡片右上角，圆心在角内一点（原版视频 00:16、00:18）。跟着悬停放大后的卡片走。
+    private func placeRemoveButton(animated: Bool) {
+        guard draggingUID == nil, let hoveredUID, let view = rowViews[hoveredUID], !view.isHidden,
+              let row = rows.first(where: { $0.uid == hoveredUID }),
+              let resting = restingFrames(skipping: nil).first(where: { $0.uid == row.uid })?.frame else {
             removeButton.isHidden = true
             removeButton.resetHover()
             return
         }
+        let card = resting.insetBy(dx: -Self.hoverGrowth.width, dy: -Self.hoverGrowth.height)
         let side = Self.removeSide
-        removeButton.baseFrame = NSRect(x: view.frame.maxX - side / 2 - 4, y: view.frame.minY - side / 2 + 4, width: side, height: side)
+        removeButton.baseFrame = NSRect(x: card.maxX - side / 2 - 3, y: card.minY - side / 2 + 3, width: side, height: side)
         removeButton.isHidden = false
+        _ = animated
     }
 
     @objc private func removeClicked() {
@@ -231,7 +287,7 @@ final class StackListView: NSView {
         onRemove?(hoveredUID)
     }
 
-    // MARK: 点按
+    // MARK: 点按与拖动
 
     private func uid(at point: NSPoint) -> Int? {
         rowViews.first { !$0.value.isHidden && $0.value.frame.contains(point) }?.key
@@ -252,39 +308,141 @@ final class StackListView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let uid = mouseDownUID, let view = rowViews[uid] else { return }
         let point = convert(event.locationInWindow, from: nil)
-        guard hypot(point.x - mouseDownPoint.x, point.y - mouseDownPoint.y) > 3, let item = dragItem?(uid) else { return }
+        if liftedUID != nil {
+            // 拖出窗口就转成系统拖拽，好拖进别的应用。
+            if let content = window?.contentView, !content.bounds.contains(content.convert(event.locationInWindow, from: nil)) {
+                beginDragOut(with: event)
+            } else {
+                moveLift(to: point)
+                autoscroll(with: event)
+            }
+            return
+        }
+        guard let uid = mouseDownUID, hypot(point.x - mouseDownPoint.x, point.y - mouseDownPoint.y) > 3 else { return }
         mouseDownUID = nil
-        item.setString(String(uid), forType: Self.rowType)
-        let dragging = NSDraggingItem(pasteboardWriter: item)
-        dragging.setDraggingFrame(view.frame, contents: view.snapshot())
-        draggingUID = uid
-        hoveredUID = nil
-        droppedInside = false
-        dragAllowed = true
-        dragSide = view.frame.width
-        dropIndex = rows.firstIndex { $0.uid == uid }
-        layoutRows(animated: false)
-        let session = beginDraggingSession(with: [dragging], event: event, source: self)
-        // 取消、没放下时不飞回原位，在松手处冒一团云（同面板卡片，L147）。
-        session.animatesToStartingPositionsOnCancelOrFail = false
-        watchEscape(session)
+        beginLift(uid: uid, at: mouseDownPoint)
+        moveLift(to: point)
     }
 
     override func mouseUp(with event: NSEvent) {
         mouseDownUID = nil
+        if liftedUID != nil { dropLift(animated: true) }
     }
 
-    /// 拖动中按 Esc 取消（同面板卡片，L110）：拖动循环里按键事件不一定送到这里，直接看键盘状态。
-    /// 别的应用只在拖动开始时问一次允许什么操作，中途改不管用；把拖动带的内容清空，它们松手时读不到东西。
-    private func watchEscape(_ session: NSDraggingSession) {
+    override func resetCursorRects() {
+        if notice != nil, !noticeView.isHidden { addCursorRect(noticeView.frame, cursor: .pointingHand) }
+    }
+
+    /// 卡片浮起来：放大、阴影加重，排到最上层；它原来的位置先空着。
+    private func beginLift(uid: Int, at point: NSPoint) {
+        guard let view = rowViews[uid] else { return }
+        liftedUID = uid
+        draggingUID = uid
+        hoveredUID = nil
+        dragAllowed = true
+        droppedInside = false
+        dropIndex = rows.firstIndex { $0.uid == uid }
+        dragSide = view.frame.width
+        grabOffset = point.y - view.frame.minY
+        // 浮起的卡片要在其他卡片上面，但在 × 和插入线下面。
+        addSubview(view, positioned: .below, relativeTo: insertionLine)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.allowsImplicitAnimation = true
+            view.animator().frame = liftFrame(for: view, top: view.frame.minY)
+            view.setEmphasis(.lifted, animated: true)
+        }
+        layoutRows(animated: true)
+        watchEscape()
+    }
+
+    private func liftFrame(for view: StackRowView, top: CGFloat) -> NSRect {
+        let height = view.row.map(Self.height(of:)) ?? view.frame.height
+        let resting = NSRect(x: Self.inset, y: top, width: Self.width - Self.inset * 2, height: height)
+        return resting.insetBy(dx: -Self.liftGrowth.width, dy: -Self.liftGrowth.height)
+    }
+
+    /// 浮起的卡片跟着指针上下走（不左右偏），按它的中线算出新位置，其余卡片平滑让位。
+    private func moveLift(to point: NSPoint) {
+        guard let uid = liftedUID, let view = rowViews[uid] else { return }
+        let height = view.row.map(Self.height(of:)) ?? view.frame.height
+        let top = min(max(point.y - grabOffset, firstRowY - 6), max(firstRowY, contentHeight - height - Self.inset + 6))
+        view.frame = liftFrame(for: view, top: top)
+        // 拖着的卡片的中线越过哪张卡片原来的中线，就和它换位（和原来的位置比，不和让位后的比，免得刚一动下面那张就跳上来）。
+        let middle = top + height / 2
+        var index = 0
+        for (other, frame) in restingFrames(skipping: nil) where other != uid && middle > frame.midY { index += 1 }
+        if index != dropIndex {
+            dropIndex = index
+            layoutRows(animated: true)
+        }
+    }
+
+    /// 松手：卡片缓缓落进空位，落好以后再改顺序（列表刷新时位置一样，不会跳）。
+    private func dropLift(animated: Bool) {
+        guard let uid = liftedUID, let view = rowViews[uid] else { return }
         dragWatch?.invalidate()
+        dragWatch = nil
+        let from = rows.firstIndex { $0.uid == uid }
+        let to = dragAllowed ? (dropIndex ?? from ?? 0) : (from ?? 0)
+        // 空位在第几位，落点就是那一格。
+        var slot = firstRowY
+        for (index, (_, frame)) in restingFrames(skipping: uid).enumerated() where index < to { slot = frame.maxY + Self.spacing }
+        let target = NSRect(x: Self.inset, y: slot, width: Self.width - Self.inset * 2, height: view.row.map(Self.height(of:)) ?? view.frame.height)
+        guard animated else {
+            view.frame = target
+            view.setEmphasis(.normal, animated: false)
+            completeLift(uid: uid, from: from, to: to)
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = Self.slideDuration
+            context.timingFunction = Self.slideTiming
+            context.allowsImplicitAnimation = true
+            view.animator().frame = target
+            view.setEmphasis(.normal, animated: true)
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.completeLift(uid: uid, from: from, to: to) }
+        })
+    }
+
+    private func completeLift(uid: Int, from: Int?, to: Int) {
+        liftedUID = nil
+        draggingUID = nil
+        dropIndex = nil
+        if let from, from != to { onMove?(uid, to) } else { layoutRows(animated: false) }
+    }
+
+    /// 拖出窗口：浮起的卡片藏起来，换成系统拖拽（带上条目内容），别的应用可以接。
+    private func beginDragOut(with event: NSEvent) {
+        guard let uid = liftedUID, let view = rowViews[uid], let item = dragItem?(uid) else { return }
+        liftedUID = nil
+        item.setString(String(uid), forType: Self.rowType)
+        let dragging = NSDraggingItem(pasteboardWriter: item)
+        dragging.setDraggingFrame(view.frame, contents: view.snapshot())
+        view.isHidden = true
+        view.setEmphasis(.normal, animated: false)
+        dropIndex = nil
+        layoutRows(animated: true)
+        let session = beginDraggingSession(with: [dragging], event: event, source: self)
+        // 取消、没放下时不飞回原位，在松手处冒一团云（同面板卡片，L147）。
+        session.animatesToStartingPositionsOnCancelOrFail = false
         dragSession = session
+    }
+
+    /// 拖动中按 Esc 取消（同面板卡片，L110）：窗口不是 key 窗口，按键送不到这里，直接看键盘状态。
+    /// 窗口里拖着时卡片落回原位；已经转成系统拖拽时清空拖动内容、立刻结束会话、冒云团。
+    private func watchEscape() {
+        dragWatch?.invalidate()
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.dragAllowed, CGEventSource.keyState(.combinedSessionState, key: 53) else { return }
                 self.dragAllowed = false
+                if self.liftedUID != nil {
+                    self.dropLift(animated: true)
+                    return
+                }
                 self.dragSession?.draggingPasteboard.clearContents()
                 self.dropIndex = nil
                 self.layoutRows(animated: true)
@@ -298,24 +456,14 @@ final class StackListView: NSView {
         dragWatch = timer
     }
 
-    override func resetCursorRects() {
-        if notice != nil, !noticeView.isHidden { addCursorRect(noticeView.frame, cursor: .pointingHand) }
-    }
-
-    // MARK: 放下
+    // MARK: 放下（别的应用、面板拖进来，或者拖出去又拖回来）
 
     /// 放在第几位：按指针落在哪一行的上半还是下半算，拖着的那一行不计。
     private func insertionIndex(for sender: NSDraggingInfo) -> Int {
         let point = convert(sender.draggingLocation, from: nil)
-        let visible = rows.filter { $0.uid != draggingUID }.compactMap { rowViews[$0.uid] }
-        // 拖动中各行会让位，用不让位时的位置算，免得空位跟着指针来回跳。
-        var y = firstRowY
-        for (index, view) in visible.enumerated() {
-            let height = view.frame.height
-            if point.y < y + height / 2 { return index }
-            y += height + Self.spacing
-        }
-        return visible.count
+        var index = 0
+        for (_, frame) in restingFrames(skipping: draggingUID) where point.y > frame.midY { index += 1 }
+        return index
     }
 
     private func kind(of sender: NSDraggingInfo) -> NSDragOperation {
@@ -335,18 +483,14 @@ final class StackListView: NSView {
         let index = insertionIndex(for: sender)
         if index != dropIndex {
             dropIndex = index
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
-                context.allowsImplicitAnimation = true
-                layoutRows(animated: true)
-            }
+            layoutRows(animated: true)
         }
         return operation
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         dropIndex = nil
-        NSAnimationContext.runAnimationGroup { _ in layoutRows(animated: true) }
+        layoutRows(animated: true)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -380,6 +524,7 @@ final class StackListView: NSView {
     func debugHover(row index: Int) -> NSRect? {
         guard rows.indices.contains(index) else { return nil }
         hoveredUID = rows[index].uid
+        layoutRows(animated: false)
         return removeButton.isHidden ? nil : removeButton.frame
     }
     func debugClickRemove() { removeClicked() }
@@ -388,6 +533,26 @@ final class StackListView: NSView {
         removeButton.debugHover(true)
         defer { removeButton.debugHover(false) }
         return (removeButton.frame, removeButton.hovering)
+    }
+    /// 悬停的那一行是不是放大、换成了悬停的样子。
+    func debugHoverEmphasis(row index: Int) -> (grown: Bool, emphasis: StackRowView.Emphasis)? {
+        guard rows.indices.contains(index), let view = rowViews[rows[index].uid] else { return nil }
+        let resting = restingFrames(skipping: nil)[index].frame
+        return (view.frame.width > resting.width, view.emphasis)
+    }
+    /// 走一遍窗口里的拖动排序：按住第 `index` 行，拖到 `y`（列表坐标，卡片中线），中途看各行有没有让位，最后不带动画松手。
+    func debugLiftDrag(row index: Int, toMiddle y: CGFloat) -> (liftedOnTop: Bool, dropIndex: Int?) {
+        let uid = rows[index].uid
+        let frame = rowViews[uid]?.frame ?? .zero
+        let grab = NSPoint(x: frame.midX, y: frame.midY)
+        beginLift(uid: uid, at: grab)
+        moveLift(to: NSPoint(x: grab.x, y: y))
+        let liftedIndex = subviews.firstIndex { $0 === rowViews[uid] } ?? -1
+        let others = rowViews.filter { $0.key != uid }.compactMap { entry in subviews.firstIndex { $0 === entry.value } }
+        let onTop = others.allSatisfy { $0 < liftedIndex }
+        let result = (onTop && rowViews[uid]?.emphasis == .lifted, dropIndex)
+        dropLift(animated: false)
+        return result
     }
     /// 走一遍拖动结束的处理；返回是否冒了云团。
     func debugEndDrag(uid: Int, operation: NSDragOperation, escaped: Bool = false) -> Bool {
@@ -409,7 +574,7 @@ extension StackListView: NSDraggingSource {
         finishDrag(at: screenPoint, operation: operation, showEffect: true)
     }
 
-    /// 拖动结束：对方收下了就交给 `onDraggedOut`（这一行离开 Stack）；取消、没放下、按了 Esc 就在松手处冒一团云，这一行留在原处。
+    /// 系统拖拽结束：对方收下了就交给 `onDraggedOut`（这一行离开 Stack）；取消、没放下、按了 Esc 就在松手处冒一团云，这一行留在原处。
     /// 返回是否冒了云团。
     @discardableResult
     private func finishDrag(at screenPoint: NSPoint, operation: NSDragOperation, showEffect: Bool) -> Bool {
@@ -419,6 +584,7 @@ extension StackListView: NSDraggingSource {
         let uid = draggingUID
         let accepted = dragAllowed && !operation.isEmpty
         draggingUID = nil
+        liftedUID = nil
         dropIndex = nil
         defer {
             droppedInside = false
@@ -432,27 +598,241 @@ extension StackListView: NSDraggingSource {
             onDraggedOut?(uid)
             return false
         }
-        layoutRows(animated: false)
+        layoutRows(animated: true)
         if showEffect { PanelController.poof(at: screenPoint, cardSide: dragSide) }
         return true
     }
 }
 
-/// 行右上角的 ×：指针移上去时略微放大、颜色反过来（深底浅叉 ↔ 浅底深叉），表示点它会删掉这一行。
+/// 一张卡片：左边文字最多两行，右边可能有缩略图、网站图标或色块。
+/// 卡片是实心的（深色下也不透），叠在别的卡片上时盖住下面的；阴影画在外层，圆角裁剪在里层。
+@MainActor
+final class StackRowView: NSView {
+    enum Emphasis: Equatable {
+        case normal
+        /// 指针在上面：略微提亮，带柔和的阴影。
+        case hover
+        /// 拖动中浮起：阴影更重。
+        case lifted
+    }
+
+    static let cornerRadius: CGFloat = 13
+
+    var row: StackListView.Row? { didSet { apply() } }
+    private(set) var emphasis: Emphasis = .normal
+
+    private let card = StackCardView()
+    private let label = NSTextField(wrappingLabelWithString: "")
+    private let accessory = NSView()
+    private let accessoryImage = NSImageView()
+
+    override var isFlipped: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = false
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0
+        layer?.shadowRadius = 0
+        layer?.shadowOffset = .zero
+        card.wantsLayer = true
+        card.layer?.cornerRadius = Self.cornerRadius
+        card.layer?.cornerCurve = .continuous
+        card.layer?.masksToBounds = true
+        card.autoresizingMask = [.width, .height]
+        addSubview(card)
+        label.isSelectable = false
+        label.font = StackListView.font
+        label.maximumNumberOfLines = 2
+        label.cell?.truncatesLastVisibleLine = true
+        label.lineBreakMode = .byTruncatingTail
+        card.addSubview(label)
+        accessory.wantsLayer = true
+        accessory.layer?.contentsGravity = .resizeAspectFill
+        card.addSubview(accessory)
+        accessoryImage.imageScaling = .scaleProportionallyUpOrDown
+        accessory.addSubview(accessoryImage)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 点按都交给列表处理（双击、拖动）。
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
+    override func mouseDown(with event: NSEvent) { superview?.mouseDown(with: event) }
+    override func mouseDragged(with event: NSEvent) { superview?.mouseDragged(with: event) }
+    override func mouseUp(with event: NSEvent) { superview?.mouseUp(with: event) }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        apply()
+        updateShadowPath()
+    }
+
+    func setEmphasis(_ value: Emphasis, animated: Bool) {
+        guard value != emphasis else { return }
+        emphasis = value
+        card.highlighted = value != .normal
+        let (opacity, radius, offset): (Float, CGFloat, CGFloat) = switch value {
+        case .normal: (0, 0, 0)
+        case .hover: (0.16, 6, 2)
+        case .lifted: (0.3, 14, 7)
+        }
+        guard let layer else { return }
+        let changes = { [weak layer] in
+            layer?.shadowOpacity = opacity
+            layer?.shadowRadius = radius
+            // 翻转坐标的视图里，图层的 y 轴向上：负值是往下落。
+            layer?.shadowOffset = CGSize(width: 0, height: -offset)
+        }
+        if animated {
+            for (key, value) in [("shadowOpacity", opacity as Any), ("shadowRadius", radius as Any)] {
+                let animation = CABasicAnimation(keyPath: key)
+                animation.fromValue = layer.presentation()?.value(forKeyPath: key) ?? layer.value(forKeyPath: key)
+                animation.toValue = value
+                animation.duration = StackListView.slideDuration
+                animation.timingFunction = StackListView.slideTiming
+                layer.add(animation, forKey: key)
+            }
+        }
+        changes()
+    }
+
+    private func apply() {
+        guard let row else { return }
+        label.attributedStringValue = row.text
+        setAccessibilityLabel(row.accessibilityLabel)
+        accessory.isHidden = row.accessory == .none
+        accessory.layer?.contents = nil
+        accessory.layer?.backgroundColor = StackCardView.wellColor.resolvedCGColor(in: effectiveAppearance)
+        accessoryImage.isHidden = true
+        accessoryImage.contentTintColor = nil
+        switch row.accessory {
+        case .none: break
+        case .cover(let image):
+            accessory.layer?.contents = image
+        case .icon(let image):
+            accessoryImage.isHidden = false
+            accessoryImage.image = image
+        case .symbol(let name):
+            accessoryImage.isHidden = false
+            accessoryImage.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
+            accessoryImage.contentTintColor = .tertiaryLabelColor
+        case .color(let color):
+            accessory.layer?.backgroundColor = color.cgColor
+        }
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        card.frame = bounds
+        updateShadowPath()
+        guard let row else { return }
+        let trailing = row.accessory == .none ? 0 : StackListView.accessoryWidth
+        let textWidth = bounds.width - 24 - trailing
+        let height = min(label.sizeThatFits(NSSize(width: textWidth, height: 1000)).height, bounds.height - 16)
+        label.frame = NSRect(x: 12, y: ((bounds.height - height) / 2).rounded(), width: textWidth, height: height)
+        accessory.frame = NSRect(x: bounds.width - StackListView.accessoryWidth, y: 0, width: StackListView.accessoryWidth, height: bounds.height)
+        accessoryImage.frame = accessory.bounds.insetBy(dx: (accessory.bounds.width - 22) / 2, dy: (accessory.bounds.height - 22) / 2)
+    }
+
+    private func updateShadowPath() {
+        layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: Self.cornerRadius, cornerHeight: Self.cornerRadius, transform: nil)
+    }
+
+    /// 拖出窗口时跟着指针走的图：这一行的样子，带圆角。
+    func snapshot() -> NSImage {
+        let image = NSImage(size: bounds.size)
+        guard let rep = card.bitmapImageRepForCachingDisplay(in: card.bounds) else { return image }
+        card.cacheDisplay(in: card.bounds, to: rep)
+        image.addRepresentation(rep)
+        // 缩略图和色块画在图层上，`cacheDisplay` 画不出来，另外补上。
+        guard let row, row.accessory != .none else { return image }
+        image.lockFocusFlipped(true)
+        let rect = accessory.frame
+        NSBezierPath(roundedRect: bounds, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius).addClip()
+        switch row.accessory {
+        case .cover(let picture):
+            let scale = max(rect.width / max(picture.size.width, 1), rect.height / max(picture.size.height, 1))
+            let size = NSSize(width: picture.size.width * scale, height: picture.size.height * scale)
+            NSBezierPath(rect: rect).addClip()
+            picture.draw(in: NSRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height),
+                         from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        case .color(let color):
+            color.setFill()
+            rect.fill()
+        default: break
+        }
+        image.unlockFocus()
+        return image
+    }
+}
+
+/// 卡片的底：实心圆角块加一圈很细的描边。悬停、浮起时略微提亮。
+@MainActor
+final class StackCardView: NSView {
+    var highlighted = false { didSet { if highlighted != oldValue { needsDisplay = true } } }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    static func fillColor(highlighted: Bool) -> NSColor {
+        NSColor(name: nil) { appearance in
+            let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            return dark ? NSColor(white: highlighted ? 0.3 : 0.255, alpha: 1) : NSColor(white: highlighted ? 1 : 0.975, alpha: 1)
+        }
+    }
+    static let borderColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(0.08) : NSColor.black.withAlphaComponent(0.07)
+    }
+    static let wellColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(0.06) : NSColor.black.withAlphaComponent(0.04)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = StackRowView.cornerRadius
+        Self.fillColor(highlighted: highlighted).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: r, yRadius: r).fill()
+        let border = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: r - 0.5, yRadius: r - 0.5)
+        border.lineWidth = 1
+        Self.borderColor.setStroke()
+        border.stroke()
+    }
+}
+
+private extension NSColor {
+    func resolvedCGColor(in appearance: NSAppearance) -> CGColor {
+        var color = cgColor
+        appearance.performAsCurrentDrawingAppearance { color = self.cgColor }
+        return color
+    }
+}
+
+/// 行右上角的 ×：平时是灰色小圆，指针移上去略微放大、变成暗红色，表示点它会删掉这一行。
 @MainActor
 final class StackRemoveButton: StackButton {
     /// 不悬停时的位置和大小；悬停时以它为中心放大 `growth`。
     var baseFrame: NSRect = .zero { didSet { frame = hovering ? grown : baseFrame } }
-    static let growth: CGFloat = 2.5
+    static let growth: CGFloat = 1.5
+    static let closeRed = NSColor(srgbRed: 0.72, green: 0.13, blue: 0.14, alpha: 1)
     private(set) var hovering = false
     private var grown: NSRect { baseFrame.insetBy(dx: -Self.growth, dy: -Self.growth) }
 
     private static func image(hovering: Bool) -> NSImage? {
         let colors: [NSColor] = hovering
-            ? [NSColor.windowBackgroundColor, NSColor.labelColor]
-            : [.secondaryLabelColor, NSColor.windowBackgroundColor.withAlphaComponent(0.92)]
+            ? [.white, closeRed]
+            : [NSColor.white, NSColor.secondaryLabelColor.withAlphaComponent(0.55)]
         return NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: String(localized: "从 Stack 移除"))?
-            .withSymbolConfiguration(.init(pointSize: 16, weight: .regular).applying(.init(paletteColors: colors)))
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .semibold).applying(.init(paletteColors: colors)))
     }
 
     override init(frame: NSRect) {
@@ -461,6 +841,11 @@ final class StackRemoveButton: StackButton {
         isBordered = false
         imagePosition = .imageOnly
         imageScaling = .scaleProportionallyUpOrDown
+        wantsLayer = true
+        layer?.shadowColor = NSColor.black.cgColor
+        layer?.shadowOpacity = 0.2
+        layer?.shadowRadius = 1.5
+        layer?.shadowOffset = CGSize(width: 0, height: -0.5)
     }
 
     @available(*, unavailable)
@@ -493,138 +878,8 @@ final class StackRemoveButton: StackButton {
 
     #if DEBUG
     func debugHover(_ value: Bool) { setHovering(value) }
+    var debugIsRed: Bool { hovering }
     #endif
-}
-
-/// 一张卡片：左边文字最多两行，右边可能有缩略图、网站图标或色块。
-@MainActor
-final class StackRowView: NSView {
-    static let cornerRadius: CGFloat = 13
-
-    var row: StackListView.Row? { didSet { apply() } }
-
-    private let label = NSTextField(wrappingLabelWithString: "")
-    private let accessory = NSView()
-    private let accessoryImage = NSImageView()
-
-    override var isFlipped: Bool { true }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    override var mouseDownCanMoveWindow: Bool { false }
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = Self.cornerRadius
-        layer?.cornerCurve = .continuous
-        layer?.masksToBounds = true
-        label.isSelectable = false
-        label.font = StackListView.font
-        label.maximumNumberOfLines = 2
-        label.cell?.truncatesLastVisibleLine = true
-        label.lineBreakMode = .byTruncatingTail
-        addSubview(label)
-        accessory.wantsLayer = true
-        accessory.layer?.contentsGravity = .resizeAspectFill
-        addSubview(accessory)
-        accessoryImage.imageScaling = .scaleProportionallyUpOrDown
-        accessory.addSubview(accessoryImage)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.button)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    /// 点按都交给列表处理（双击、拖动）。
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        super.hitTest(point) == nil ? nil : self
-    }
-
-    override func mouseDown(with event: NSEvent) { superview?.mouseDown(with: event) }
-    override func mouseDragged(with event: NSEvent) { superview?.mouseDragged(with: event) }
-    override func mouseUp(with event: NSEvent) { superview?.mouseUp(with: event) }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
-        apply()
-    }
-
-    private static let cardColor = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(0.12) : NSColor.white.withAlphaComponent(0.9)
-    }
-    private static let wellColor = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor.white.withAlphaComponent(0.06) : NSColor.black.withAlphaComponent(0.04)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        Self.cardColor.setFill()
-        NSBezierPath(roundedRect: bounds, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius).fill()
-    }
-
-    private func apply() {
-        guard let row else { return }
-        label.attributedStringValue = row.text
-        setAccessibilityLabel(row.accessibilityLabel)
-        accessory.isHidden = row.accessory == .none
-        accessory.layer?.contents = nil
-        accessory.layer?.backgroundColor = Self.wellColor.cgColor
-        accessoryImage.isHidden = true
-        accessoryImage.contentTintColor = nil
-        switch row.accessory {
-        case .none: break
-        case .cover(let image):
-            accessory.layer?.contents = image
-        case .icon(let image):
-            accessoryImage.isHidden = false
-            accessoryImage.image = image
-        case .symbol(let name):
-            accessoryImage.isHidden = false
-            accessoryImage.image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
-            accessoryImage.contentTintColor = .tertiaryLabelColor
-        case .color(let color):
-            accessory.layer?.backgroundColor = color.cgColor
-        }
-        needsLayout = true
-    }
-
-    override func layout() {
-        super.layout()
-        guard let row else { return }
-        let trailing = row.accessory == .none ? 0 : StackListView.accessoryWidth
-        let textWidth = bounds.width - 24 - trailing
-        let height = min(label.sizeThatFits(NSSize(width: textWidth, height: 1000)).height, bounds.height - 16)
-        label.frame = NSRect(x: 12, y: ((bounds.height - height) / 2).rounded(), width: textWidth, height: height)
-        accessory.frame = NSRect(x: bounds.width - StackListView.accessoryWidth, y: 0, width: StackListView.accessoryWidth, height: bounds.height)
-        accessoryImage.frame = accessory.bounds.insetBy(dx: (accessory.bounds.width - 22) / 2, dy: (accessory.bounds.height - 22) / 2)
-    }
-
-    /// 拖动时跟着指针走的图：这一行的样子，带圆角。
-    func snapshot() -> NSImage {
-        let image = NSImage(size: bounds.size)
-        guard let rep = bitmapImageRepForCachingDisplay(in: bounds) else { return image }
-        cacheDisplay(in: bounds, to: rep)
-        image.addRepresentation(rep)
-        // 缩略图和色块画在图层上，`cacheDisplay` 画不出来，另外补上。
-        guard let row, row.accessory != .none else { return image }
-        image.lockFocusFlipped(true)
-        let rect = accessory.frame
-        NSBezierPath(roundedRect: bounds, xRadius: Self.cornerRadius, yRadius: Self.cornerRadius).addClip()
-        switch row.accessory {
-        case .cover(let picture):
-            let scale = max(rect.width / max(picture.size.width, 1), rect.height / max(picture.size.height, 1))
-            let size = NSSize(width: picture.size.width * scale, height: picture.size.height * scale)
-            NSBezierPath(rect: rect).addClip()
-            picture.draw(in: NSRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height),
-                         from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-        case .color(let color):
-            color.setFill()
-            rect.fill()
-        default: break
-        }
-        image.unlockFocus()
-        return image
-    }
 }
 
 /// 没有授权时最上面那一行：警告图标加说明，点了打开系统设置。

@@ -27,7 +27,7 @@ final class DirectPasteQuestion {
             NSApp.stopModal()
             panel?.orderOut(nil)
         }
-        let hosting = NSHostingView(rootView: content)
+        let hosting = makeHostingView(content)
         hosting.sizingOptions = [.intrinsicContentSize]
         glass.contentView = hosting
         panel.contentView = glass
@@ -69,13 +69,13 @@ private struct QuestionView: View {
                 .fixedSize(horizontal: false, vertical: true).padding(.bottom, 20)
             Button { onAnswer(true) } label: {
                 Text("允许直接粘贴").frame(maxWidth: .infinity, minHeight: 34)
-            }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(.defaultAction).focusEffectDisabled()
+            }.buttonStyle(.borderedProminent).buttonBorderShape(.capsule).controlSize(.large).keyboardShortcut(.defaultAction)
                 .padding(.bottom, 8)
             Button { onAnswer(false) } label: {
                 Text("暂不启用，复制到剪贴板").frame(maxWidth: .infinity, minHeight: 34)
-            }.buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.large).focusEffectDisabled()
+            }.buttonStyle(.bordered).buttonBorderShape(.capsule).controlSize(.large)
                 .padding(.bottom, 14)
-            Toggle("不要再问了", isOn: $suppress).toggleStyle(.checkbox).focusEffectDisabled()
+            Toggle("不要再问了", isOn: $suppress).toggleStyle(.checkbox)
         }.padding(.horizontal, 24).padding(.top, 26).padding(.bottom, 20).frame(width: 300)
     }
 }

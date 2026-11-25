@@ -56,6 +56,11 @@ struct AppPreferences: @unchecked Sendable {
             if let data = try? JSONEncoder().encode(newValue) { defaults.set(data, forKey: "keyboardSettings") }
         }
     }
+    /// 启动时静默检查一次更新（见 `Updates`）。默认开；关掉后只在用户点“检查更新…”时联网。
+    var checksForUpdatesAtLaunch: Bool {
+        get { defaults.object(forKey: "checksForUpdatesAtLaunch") as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: "checksForUpdatesAtLaunch") }
+    }
     var soundEffectsEnabled: Bool {
         get { defaults.object(forKey: "soundEffectsEnabled") as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: "soundEffectsEnabled") }

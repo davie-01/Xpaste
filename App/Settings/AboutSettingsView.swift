@@ -1,10 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// 设置里的“关于”页：应用图标、名称、版本，检查更新和 GitHub 入口。
+/// 设置里的“关于”页：应用图标、名称、版本，检查更新（Sparkle）和 GitHub 入口。
 struct AboutSettingsView: View {
-    @State private var checking = false
-    @State private var result: UpdateChecker.Result?
+    @State private var checksAtLaunch = AppPreferences.shared.checksForUpdatesAtLaunch
 
     var body: some View {
         VStack(spacing: 14) {
@@ -15,14 +14,12 @@ struct AboutSettingsView: View {
                 Text("版本 \(AppInfo.version)（\(AppInfo.build)）").foregroundStyle(.secondary).textSelection(.enabled)
             }
             HStack(spacing: 10) {
+                // 结果（已是最新、有新版本、出错）由 Sparkle 自己的窗口显示。
                 Button {
-                    Task { await check() }
+                    Updates.shared.checkForUpdates()
                 } label: {
-                    HStack(spacing: 6) {
-                        if checking { ProgressView().controlSize(.small) }
-                        checking ? Text("正在检查…") : Text("检查更新")
-                    }.frame(minWidth: 96)
-                }.disabled(checking)
+                    Text("检查更新…").frame(minWidth: 96)
+                }
                 if let url = AppInfo.repositoryURL {
                     Button {
                         NSWorkspace.shared.open(url)
@@ -34,38 +31,12 @@ struct AboutSettingsView: View {
                     }
                 }
             }.controlSize(.large).padding(.top, 6)
-            resultView.frame(minHeight: 40, alignment: .top)
+            Toggle("启动时检查更新", isOn: $checksAtLaunch)
+                .onChange(of: checksAtLaunch) { _, value in AppPreferences.shared.checksForUpdatesAtLaunch = value }
+            Text("只在启动时检查一次，有新版本才提示；关掉后只在点“检查更新…”时联网。")
+                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Spacer()
             Text("MIT 许可证 · 免费开源").font(.footnote).foregroundStyle(.tertiary)
         }.frame(maxWidth: .infinity)
-    }
-
-    @ViewBuilder private var resultView: some View {
-        switch result {
-        case nil:
-            EmptyView()
-        case .upToDate:
-            Label("已是最新版本", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
-        case .available(let version, let page):
-            VStack(spacing: 6) {
-                Label("有新版本 \(version)", systemImage: "arrow.down.circle.fill").foregroundStyle(Color.accentColor)
-                Button("前往下载页") { NSWorkspace.shared.open(page) }.buttonStyle(.link)
-            }
-        case .notPublished:
-            Label("还没有发布过版本", systemImage: "info.circle").foregroundStyle(.secondary)
-        case .failed(let message):
-            VStack(spacing: 4) {
-                Label("检查更新失败", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(message).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-            }
-        }
-    }
-
-    private func check() async {
-        checking = true
-        result = nil
-        let outcome = await UpdateChecker.check()
-        checking = false
-        result = outcome
     }
 }

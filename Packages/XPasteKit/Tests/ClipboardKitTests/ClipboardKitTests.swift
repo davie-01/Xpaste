@@ -436,6 +436,27 @@ private func textItem(_ string: String) -> ClipItemSnapshot {
         await monitor.settle()
         #expect(captured.map(\.plainText) == ["arrived late"])
     }
+
+    /// L168：计数变了、数据一直不来时，重试用完要报告放弃（以前这条路径不留痕迹），并且什么也不采集。
+    @Test func givingUpOnDataThatNeverArrivesIsReported() async throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        let monitor = PasteboardMonitor(pasteboard: pasteboard)
+        monitor.sourceProvider = { ClipSource(bundleID: nil, name: nil) }
+        var captured: [ClipSnapshot] = []
+        var gaveUp: [Int] = []
+        monitor.onCapture = { captured.append($0) }
+        monitor.onGiveUp = { gaveUp.append($0) }
+        pasteboard.declareTypes([.string], owner: nil)
+        let count = pasteboard.changeCount
+        monitor.tick()
+        // 重试间隔一共 0.35 秒，留足余量。
+        for _ in 0..<20 where gaveUp.isEmpty {
+            try await Task.sleep(for: .milliseconds(50))
+            await monitor.settle()
+        }
+        #expect(gaveUp == [count])
+        #expect(captured.isEmpty)
+    }
 }
 
 @MainActor

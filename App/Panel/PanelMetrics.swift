@@ -31,6 +31,8 @@ enum PanelMetrics {
     static let selectionOutset: CGFloat = 4
     /// 上缘可拖动调整高度的热区（从玻璃面板顶边向下）。
     static let resizeHandleHeight: CGFloat = 8
+    /// 上缘热区左右各让出的宽度，避开两端的圆角。
+    static let resizeHandleInset: CGFloat = 40
     /// 窗口左右和底边到可见玻璃面板的边距。顶边没有，玻璃顶到窗口上缘（原版如此）。
     static let outerMargin: CGFloat = 8
     static let panelCornerRadius: CGFloat = 28

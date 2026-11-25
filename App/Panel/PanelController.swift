@@ -49,21 +49,35 @@ final class BarelessScrollView: NSScrollView {
 /// 面板上缘：拖动调整高度，双击恢复默认高度，右键锁定或恢复（面板高度的全部操作都在这里，“…”菜单里另有一份）。
 /// 指针移上来时整条上边框柔和地发光（`PanelEdgeGlowView`），表示可以拖；锁定时不发光，光标也不变。
 final class ResizeHandleView: NSView {
-    /// 参数是相对按下时的纵向位移（向上为正）；`ended` 为 true 表示松手。
+    /// 参数是相对按下时的纵向位移（向上为正，取自拖动事件自身的窗口坐标）；`ended` 为 true 表示松手。
     var onDrag: ((_ delta: CGFloat, _ ended: Bool) -> Void)?
+    /// 按下开始拖动（不是双击）。面板借这个时机把窗口临时向上扩展，见 `PanelController.beginHeightDrag()`。
+    var onDragBegan: (() -> Void)?
     var onDoubleClick: (() -> Void)?
     /// 锁着的时候按下了（拖动或双击）。
     var onLockedPress: (() -> Void)?
-    /// 指针进出上缘、开始或结束拖动；参数是边框该不该亮。
+    /// 指针进出上缘、开始或结束拖动；参数是柔光该不该亮（只在悬停时亮，拖动时熄灭）。
     var onHighlight: ((Bool) -> Void)?
     var menuProvider: (() -> NSMenu?)?
     var isLocked = false {
         didSet {
             updateHighlight()
             window?.invalidateCursorRects(for: self)
+            if hovering { updateCursor() }
+        }
+    }
+    /// 现在还能往哪边拖：到了最高只能往下（向里收），到了最低只能往上（向外放）。光标的箭头跟着变。
+    var directions: NSCursor.FrameResizeDirection.Set = .all {
+        didSet {
+            guard directions != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+            if hovering || dragging { updateCursor() }
         }
     }
     private var startY: CGFloat = 0
+    /// 最近一个事件相对按下时的位移；面板在拖动中被收起时用它收尾。
+    private var lastDelta: CGFloat = 0
+    var isDragging: Bool { dragging }
     private var dragging = false { didSet { updateHighlight() } }
     private var hovering = false { didSet { updateHighlight() } }
 
@@ -77,17 +91,35 @@ final class ResizeHandleView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// 系统原生的窗口边缘调整光标（上下两个三角形）。
+    private var resizeCursor: NSCursor { NSCursor.frameResize(position: .top, directions: directions) }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .cursorUpdate, .activeAlways, .inVisibleRect],
+                                       owner: self))
     }
 
-    override func mouseEntered(with event: NSEvent) { hovering = true }
-    override func mouseExited(with event: NSEvent) { hovering = false }
+    // 光标直接在指针进出、移动时设：面板不是 key 窗口时（比如焦点在预览浮层上）光标区域不起作用，
+    // 以前会出现柔光亮了、光标却还是箭头，要点一下才变（用户真机）。
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        updateCursor()
+    }
+    override func mouseMoved(with event: NSEvent) { updateCursor() }
+    override func cursorUpdate(with event: NSEvent) { updateCursor() }
+    override func mouseExited(with event: NSEvent) {
+        hovering = false
+        if !dragging { NSCursor.arrow.set() }
+    }
+
+    private func updateCursor() {
+        if isLocked { NSCursor.arrow.set() } else { resizeCursor.set() }
+    }
 
     override func resetCursorRects() {
-        if !isLocked { addCursorRect(bounds, cursor: .resizeUpDown) }
+        if !isLocked { addCursorRect(bounds, cursor: resizeCursor) }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -97,25 +129,45 @@ final class ResizeHandleView: NSView {
             onDoubleClick?()
             return
         }
-        startY = NSEvent.mouseLocation.y
+        // 和原版一样用事件自身的窗口坐标：面板底边贴屏底不动，窗口坐标在拖动中是稳定的；
+        // 不读处理时的 NSEvent.mouseLocation，那是“现在”的指针，和这个事件对不上。
+        startY = event.locationInWindow.y
+        lastDelta = 0
         dragging = true
+        onDragBegan?()
+        updateCursor()
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard dragging else { return }
-        onDrag?(NSEvent.mouseLocation.y - startY, false)
+        lastDelta = event.locationInWindow.y - startY
+        onDrag?(lastDelta, false)
+        // 拖动中指针会离开这条窄窄的热区，光标保持调整的样子。
+        updateCursor()
     }
 
     override func mouseUp(with event: NSEvent) {
         guard dragging else { return }
+        lastDelta = event.locationInWindow.y - startY
+        endDrag()
+    }
+
+    /// 结束拖动：松手和面板在拖动中被收起走同一条路（收起后松手不会再送到这里）。
+    func endDrag() {
+        guard dragging else { return }
         dragging = false
-        onDrag?(NSEvent.mouseLocation.y - startY, true)
+        onDrag?(lastDelta, true)
+        // 面板已把窗口和热区恢复原样，按指针此刻是否还在上缘上决定悬停状态和光标。
+        if let window {
+            hovering = bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))
+        }
+        if hovering { updateCursor() } else { NSCursor.arrow.set() }
     }
 
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?() }
 
-    /// 只有没锁定、指针在上缘上（或正在拖）时才亮；锁定时、指针不在上缘时都不亮。
-    private func updateHighlight() { onHighlight?(!isLocked && (hovering || dragging)) }
+    /// 只有没锁定、指针悬停在上缘上时才亮；开始拖动就熄灭（拖动中柔光窗口不跟着更新），锁定时、指针不在上缘时都不亮。
+    private func updateHighlight() { onHighlight?(!isLocked && hovering && !dragging) }
 
     #if DEBUG
     func debugHover(_ value: Bool) { hovering = value }
@@ -125,8 +177,11 @@ final class ResizeHandleView: NSView {
 /// 上缘可拖时的柔光：从面板上边缘往上、向面板外面散开的一片渐变光，贴着边缘最亮，往上淡到透明，左右两端也淡出，没有硬边
 /// （用户真机：原先的细线加光晕太显眼；参考图是边缘处自然透出的一片光，方向是从下往上）。
 final class PanelEdgeGlowView: NSView {
-    /// 左右两端各用这么大比例的宽度淡出。
-    static let sideFade: CGFloat = 0.12
+    /// 左右两端只在这么宽（点）的一段里淡出：大约是玻璃上角圆角的两倍，柔光基本铺满整条上缘。
+    /// 以前按宽度的 12% 淡出，宽屏上两端各有两百多点在淡出，看着像中间鼓起一块（用户真机）。
+    static let sideFade: CGFloat = 56
+    /// 贴着面板边缘处的最高不透明度。
+    static let peakAlpha: CGFloat = 0.42
 
     private let glow = CAGradientLayer()
     private let fade = CAGradientLayer()
@@ -135,15 +190,13 @@ final class PanelEdgeGlowView: NSView {
         super.init(frame: frame)
         wantsLayer = true
         layer?.addSublayer(glow)
-        // 下亮上透：贴着面板边缘的底边最亮，三分之一处已经很淡，顶边完全透明。
-        glow.locations = [0, 0.35, 1]
+        // 下亮上透：贴着面板边缘最亮，往上按高斯曲线衰减、顶边归零，色标取密一些，看不出分段。
+        glow.locations = Self.verticalStops.map { NSNumber(value: Double($0.location)) }
         glow.startPoint = CGPoint(x: 0.5, y: 0)
         glow.endPoint = CGPoint(x: 0.5, y: 1)
         // 左右淡出用横向的透明度渐变做遮罩。
         fade.startPoint = CGPoint(x: 0, y: 0.5)
         fade.endPoint = CGPoint(x: 1, y: 0.5)
-        fade.colors = [CGColor(gray: 0, alpha: 0), CGColor(gray: 0, alpha: 1), CGColor(gray: 0, alpha: 1), CGColor(gray: 0, alpha: 0)]
-        fade.locations = [0, NSNumber(value: Double(Self.sideFade)), NSNumber(value: Double(1 - Self.sideFade)), 1]
         glow.mask = fade
         setAccessibilityElement(false)
     }
@@ -159,6 +212,10 @@ final class PanelEdgeGlowView: NSView {
         CATransaction.setDisableActions(true)
         glow.frame = bounds
         fade.frame = bounds
+        // 两端淡出是固定长度，位置要按当前宽度换算。
+        let stops = Self.sideStops(width: bounds.width)
+        fade.locations = stops.map { NSNumber(value: Double($0.location)) }
+        fade.colors = stops.map { CGColor(gray: 0, alpha: $0.alpha) }
         CATransaction.commit()
         updateColors()
     }
@@ -168,10 +225,26 @@ final class PanelEdgeGlowView: NSView {
         updateColors()
     }
 
+    /// 纵向色标：`t` 从边缘（0）到顶（1），不透明度 = 峰值 × 高斯衰减 × (1 − t)，乘 (1 − t) 让顶边正好归零。
+    static let verticalStops: [(location: CGFloat, alpha: CGFloat)] = (0...16).map { i in
+        let t = CGFloat(i) / 16
+        return (t, peakAlpha * exp(-t * t / (2 * 0.34 * 0.34)) * (1 - t))
+    }
+
+    /// 横向遮罩色标：两端各 `sideFade` 点内按 smoothstep 从 0 升到 1，中间全亮。
+    static func sideStops(width: CGFloat) -> [(location: CGFloat, alpha: CGFloat)] {
+        let span = min(sideFade / max(width, 1), 0.5)
+        let ramp = (0...8).map { i -> (CGFloat, CGFloat) in
+            let u = CGFloat(i) / 8
+            return (u * span, u * u * (3 - 2 * u))
+        }
+        return ramp + ramp.reversed().map { (1 - $0.0, $0.1) }
+    }
+
     private func updateColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             let accent = NSColor.controlAccentColor
-            glow.colors = [accent.withAlphaComponent(0.5).cgColor, accent.withAlphaComponent(0.18).cgColor, accent.withAlphaComponent(0).cgColor]
+            glow.colors = Self.verticalStops.map { accent.withAlphaComponent($0.alpha).cgColor }
         }
     }
 }
@@ -179,8 +252,8 @@ final class PanelEdgeGlowView: NSView {
 /// 放柔光的透明小窗口，贴在面板上边缘的正上方。面板窗口的上边就是玻璃的上边，窗口外面画不了，所以另开一个；不接收鼠标。
 @MainActor
 final class PanelEdgeGlowWindow {
-    /// 光往上散开的高度。
-    static let depth: CGFloat = 18
+    /// 光往上散开的高度。留足高度，衰减才显得柔和（18 点时过渡太急，用户真机觉得硬）。
+    static let depth: CGFloat = 32
     private var window: NSPanel?
     private(set) var isLit = false
 
@@ -278,67 +351,6 @@ final class PanelLockBadge: NSButton {
     }
 }
 
-/// 拖动上缘时跟在光标上方的高度数字，玻璃底。是单独的小窗口：光标在面板顶边上，数字要显示在面板外面。
-@MainActor
-final class HeightTipWindow {
-    private var window: NSPanel?
-    private let label = NSTextField(labelWithString: "")
-    private(set) var text = ""
-    var isShown: Bool { window?.isVisible == true && (window?.alphaValue ?? 0) > 0 }
-
-    private func makeWindow() -> NSPanel {
-        let window = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 72, height: 26), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
-        window.ignoresMouseEvents = true
-        window.isReleasedWhenClosed = false
-        // 面板在菜单栏级（24），提示要在它上面。
-        window.level = .popUpMenu
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
-        window.animationBehavior = .none
-        let glass = NSGlassEffectView()
-        glass.cornerRadius = 13
-        let content = NSView()
-        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
-        label.textColor = .labelColor
-        label.alignment = .center
-        label.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: content.centerYAnchor),
-        ])
-        glass.contentView = content
-        window.contentView = glass
-        WindowSharing.apply(to: window)
-        return window
-    }
-
-    /// 显示在 `point`（屏幕坐标，一般是光标位置）正上方。
-    func show(height: CGFloat, above point: NSPoint) {
-        let window = self.window ?? makeWindow()
-        self.window = window
-        text = "\(Int(height)) pt"
-        label.stringValue = text
-        let width = max(64, ceil(label.intrinsicContentSize.width) + 24)
-        // 光标的上下箭头大约高 20，数字摆在它上面留一点空。
-        window.setFrame(NSRect(x: (point.x - width / 2).rounded(), y: (point.y + 14).rounded(), width: width, height: 26), display: true)
-        window.alphaValue = 1
-        window.orderFrontRegardless()
-    }
-
-    func hide() {
-        guard let window, window.isVisible else { return }
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.2
-            window.animator().alphaValue = 0
-        }, completionHandler: {
-            MainActor.assumeIsolated { if window.alphaValue == 0 { window.orderOut(nil) } }
-        })
-    }
-}
-
 /// 把按键先交给控制器处理的集合视图。
 final class CardCollectionView: NSCollectionView {
     var keyHandler: ((NSEvent) -> Bool)?
@@ -395,8 +407,6 @@ final class PanelController: NSObject {
     /// 主面板窗口。
     var window: NSWindow { panel }
     var onSettings: (() -> Void)?
-    var onAbout: (() -> Void)?
-    var onHelp: (() -> Void)?
 
     /// 用户选定了要粘贴的条目。面板此时已隐藏。
     /// `direct` 为 false 时只写剪贴板，不向目标应用发粘贴。
@@ -430,7 +440,16 @@ final class PanelController: NSObject {
     private let resizeHandle = ResizeHandleView()
     private let edgeGlow = PanelEdgeGlowWindow()
     private let lockBadge = PanelLockBadge()
-    private let heightTip = HeightTipWindow()
+    /// 拖动上缘时显示的当前高度，在工具栏左端（暂停图标之后），松手隐藏。
+    private let heightLabel = NSTextField(labelWithString: "")
+    private let statusStack = NSStackView()
+    /// 玻璃顶边距窗口顶边的距离：平时为 0；拖上缘时窗口临时向上扩展，玻璃靠它留在原位。
+    private var glassTopConstraint: NSLayoutConstraint?
+    private var handleLeadingConstraint: NSLayoutConstraint?
+    private var handleTrailingConstraint: NSLayoutConstraint?
+    private var handleHeightConstraint: NSLayoutConstraint?
+    /// 正在拖上缘时窗口临时扩展到的顶边（屏幕坐标）；不在拖时为 nil。
+    private var heightDragWindowTop: CGFloat?
     private var heightAnimation: Timer?
 
     /// 面板高度，用户拖动上缘调整后会记住。
@@ -645,6 +664,8 @@ final class PanelController: NSObject {
         }
         filterPanel.close()
         preview.close()
+        // 拖上缘途中被收起（比如按了热键）：收起后松手不会再送到这里，现在就按松手收尾，恢复窗口范围。
+        resizeHandle.endDrag()
         edgeGlow.setLit(false, along: glassScreenFrame)
         // 按住卡片时面板被收起，松手不会再送到这里；拖动会话继续，由它自己结束。
         cardPress = nil
@@ -733,6 +754,10 @@ final class PanelController: NSObject {
         panel.level = .mainMenu
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         panel.hidesOnDeactivate = false
+        // 显式设 false：不设时窗口服务器按像素透明度命中，完全透明的地方鼠标落到下面的窗口。拖上缘时窗口向上扩展出的
+        // 透明区域因此不算面板的，指针一进去，下面的应用就把光标改成它的（比如输入框的 I 形），面板再也设不回来（用户真机，小样复现）。
+        // 设过就回不到按透明度命中，所以创建时就设：玻璃四周的透明留白（左右、底下各 8 点）也算面板的（用户决定，2026-11-24）。
+        panel.ignoresMouseEvents = false
         panel.isMovable = false
         panel.animationBehavior = .none
         panel.delegate = self
@@ -844,6 +869,7 @@ final class PanelController: NSObject {
 
         resizeHandle.translatesAutoresizingMaskIntoConstraints = false
         resizeHandle.onDrag = { [weak self] in self?.resizePanel(by: $0, ended: $1) }
+        resizeHandle.onDragBegan = { [weak self] in self?.beginHeightDrag() }
         resizeHandle.onDoubleClick = { [weak self] in self?.resetPanelHeight() }
         resizeHandle.onLockedPress = { [weak self] in self?.lockBadge.shake() }
         resizeHandle.onHighlight = { [weak self] lit in
@@ -852,6 +878,7 @@ final class PanelController: NSObject {
         }
         resizeHandle.menuProvider = { [weak self] in self?.panelHeightMenu() }
         resizeHandle.isLocked = preferences.panelHeightLocked
+        updateResizeDirections()
         root.addSubview(resizeHandle)
         lockBadge.target = self
         lockBadge.action = #selector(lockBadgeClicked)
@@ -867,19 +894,37 @@ final class PanelController: NSObject {
         pauseIndicator.contentTintColor = .labelColor
         pauseIndicator.toolTip = String(localized: "已暂停采集")
         pauseIndicator.isHidden = true
-        pauseIndicator.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(pauseIndicator)
+        heightLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+        heightLabel.textColor = .secondaryLabelColor
+        heightLabel.isHidden = true
+        heightLabel.setAccessibilityLabel(String(localized: "面板高度"))
+        // 工具栏左端平时只有暂停时才出现的暂停图标；高度数字排在它后面，隐藏的不占位置。
+        statusStack.orientation = .horizontal
+        statusStack.alignment = .centerY
+        statusStack.spacing = 8
+        statusStack.addArrangedSubview(pauseIndicator)
+        statusStack.addArrangedSubview(heightLabel)
+        statusStack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(statusStack)
 
         emptyLabel.font = .systemFont(ofSize: 15)
         emptyLabel.textColor = .secondaryLabelColor
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(emptyLabel)
 
+        // 顶边不留边距：原版的玻璃顶到窗口上缘（对原版截图量过，工具栏中心距玻璃顶 30）。拖上缘时临时改成窗口扩展出的高度。
+        let glassTop = glass.topAnchor.constraint(equalTo: root.topAnchor)
+        let handleLeading = resizeHandle.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: m.resizeHandleInset)
+        let handleTrailing = resizeHandle.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -m.resizeHandleInset)
+        let handleHeight = resizeHandle.heightAnchor.constraint(equalToConstant: m.resizeHandleHeight)
+        glassTopConstraint = glassTop
+        handleLeadingConstraint = handleLeading
+        handleTrailingConstraint = handleTrailing
+        handleHeightConstraint = handleHeight
         NSLayoutConstraint.activate([
             glass.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: m.outerMargin),
             glass.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -m.outerMargin),
-            // 顶边不留边距：原版的玻璃顶到窗口上缘（对原版截图量过，工具栏中心距玻璃顶 30）。
-            glass.topAnchor.constraint(equalTo: root.topAnchor),
+            glassTop,
             glass.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -m.outerMargin),
 
             toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
@@ -891,18 +936,18 @@ final class PanelController: NSObject {
             scrollView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            resizeHandle.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 40),
-            resizeHandle.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -40),
+            handleLeading,
+            handleTrailing,
             resizeHandle.topAnchor.constraint(equalTo: root.topAnchor),
-            resizeHandle.heightAnchor.constraint(equalToConstant: m.resizeHandleHeight),
+            handleHeight,
             // 锁的中心落在右上圆角的弧线附近，斜挂在角上。
             lockBadge.centerXAnchor.constraint(equalTo: glass.trailingAnchor, constant: -10),
             lockBadge.centerYAnchor.constraint(equalTo: glass.topAnchor, constant: 10),
             lockBadge.widthAnchor.constraint(equalToConstant: PanelLockBadge.side),
             lockBadge.heightAnchor.constraint(equalToConstant: PanelLockBadge.side),
 
-            pauseIndicator.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
-            pauseIndicator.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
+            statusStack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            statusStack.centerYAnchor.constraint(equalTo: toolbar.centerYAnchor),
 
             emptyLabel.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
@@ -1000,33 +1045,99 @@ final class PanelController: NSObject {
 
     // MARK: 面板高度：拖动、恢复默认、锁定
 
-    /// 拖动上缘：高度跟手，光标上方显示当前高度（玻璃底的小窗口）。锁定时不动。
+    /// 按下上缘开始拖动：同一个面板窗口临时向上扩展到屏幕顶，玻璃上缘留在原位。
+    /// 拖动中窗口外框不再变，只改玻璃的高度：指针一直落在本窗口扩展出的拖动区域里，整块区域都是缩放光标。
+    /// 以前每个拖动事件都改窗口外框，窗口总比指针慢一帧，快拖时指针越过窗口顶边，光标在箭头和缩放之间闪（用户真机）。
+    /// 透明的扩展区域能参与命中，靠的是创建面板时显式设了 `ignoresMouseEvents = false`。
+    private func beginHeightDrag() {
+        guard !preferences.panelHeightLocked, heightDragWindowTop == nil, let screen = panel.screen else { return }
+        heightAnimation?.invalidate()
+        heightAnimation = nil
+        heightAtDragStart = panelHeight
+        let top = screen.frame.maxY
+        heightDragWindowTop = top
+        var frame = panel.frame
+        frame.size.height = top - frame.minY
+        handleLeadingConstraint?.constant = 0
+        handleTrailingConstraint?.constant = 0
+        layoutGlassForHeightDrag(windowHeight: frame.height)
+        panel.setFrame(frame, display: false)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.invalidateCursorRects(for: resizeHandle)
+        showHeightLabel(panelHeight)
+    }
+
+    /// 拖动中玻璃顶边让出窗口扩展出的部分；热区覆盖整块扩展区，再往下盖住原来的上缘热区。
+    private func layoutGlassForHeightDrag(windowHeight: CGFloat) {
+        let inset = windowHeight - panelHeight
+        glassTopConstraint?.constant = inset
+        handleHeightConstraint?.constant = inset + PanelMetrics.resizeHandleHeight
+    }
+
+    /// 松手（或拖动中被收起）后把窗口范围、玻璃和热区恢复原样，窗口高度等于当前面板高度。
+    private func endHeightDragLayout() {
+        guard heightDragWindowTop != nil else { return }
+        heightDragWindowTop = nil
+        glassTopConstraint?.constant = 0
+        handleLeadingConstraint?.constant = PanelMetrics.resizeHandleInset
+        handleTrailingConstraint?.constant = -PanelMetrics.resizeHandleInset
+        handleHeightConstraint?.constant = PanelMetrics.resizeHandleHeight
+        var frame = panel.frame
+        frame.size.height = panelHeight
+        panel.setFrame(frame, display: false)
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.invalidateCursorRects(for: resizeHandle)
+    }
+
+    private func showHeightLabel(_ height: CGFloat) {
+        heightLabel.stringValue = "\(Int(height)) pt"
+        heightLabel.isHidden = false
+    }
+
+    /// 拖动上缘：高度跟手，工具栏左端显示当前高度。锁定时不动。
+    /// 照原版：用拖动事件自己的坐标算位移；超过最高、最低后按超出距离的平方根继续少量伸缩（超出 80 只多伸约 9），
+    /// 松手恢复窗口范围，再缓动收回范围并保存。
     private func resizePanel(by delta: CGFloat, ended: Bool) {
         guard !preferences.panelHeightLocked else { return }
         heightAnimation?.invalidate()
         let start = heightAtDragStart ?? panelHeight
         heightAtDragStart = ended ? nil : start
         let m = PanelMetrics.self
-        setPanelHeight(min(max(start + delta, m.minWindowHeight), m.maxWindowHeight).rounded())
+        let raw = start + delta
+        let stretched = raw > m.maxWindowHeight ? m.maxWindowHeight + sqrt(raw - m.maxWindowHeight).rounded()
+            : raw < m.minWindowHeight ? m.minWindowHeight - sqrt(m.minWindowHeight - raw).rounded()
+            : raw.rounded()
+        let settled = min(max(stretched, m.minWindowHeight), m.maxWindowHeight)
+        setPanelHeight(stretched)
         if ended {
-            heightTip.hide()
-            preferences.panelHeight = Double(panelHeight)
+            heightLabel.isHidden = true
+            preferences.panelHeight = Double(settled)
+            endHeightDragLayout()
+            if stretched != settled { animatePanelHeight(to: settled) }
         } else {
-            heightTip.show(height: panelHeight, above: NSEvent.mouseLocation)
+            showHeightLabel(settled)
         }
     }
 
-    /// 玻璃面板在屏幕上的范围（窗口左右各留 `outerMargin`，上边和窗口齐平）。
+    /// 玻璃面板在屏幕上的范围（窗口左右各留 `outerMargin`，上边是玻璃顶边：平时和窗口齐平，拖上缘时窗口向上扩展了）。
     private var glassScreenFrame: NSRect {
-        panel.frame.insetBy(dx: PanelMetrics.outerMargin, dy: 0)
+        let frame = panel.frame
+        return NSRect(x: frame.minX + PanelMetrics.outerMargin, y: frame.minY, width: frame.width - PanelMetrics.outerMargin * 2, height: panelHeight)
     }
 
     private func setPanelHeight(_ height: CGFloat) {
         let wasCompact = isCompact
         panelHeight = height
-        var frame = panel.frame
-        frame.size.height = panelHeight
-        panel.setFrame(frame, display: true)
+        updateResizeDirections()
+        if heightDragWindowTop != nil {
+            // 拖动中窗口外框固定，只改玻璃的高度。
+            layoutGlassForHeightDrag(windowHeight: panel.frame.height)
+        } else {
+            var frame = panel.frame
+            frame.size.height = panelHeight
+            // 照原版不同步重绘，内容随下一次刷新画出。
+            panel.setFrame(frame, display: false)
+        }
         if edgeGlow.isLit { edgeGlow.follow(glassScreenFrame) }
         applyMetrics()
         // 跨过紧凑阈值时卡片的版式变了，需要重新配置可见的卡片。
@@ -1036,6 +1147,12 @@ final class PanelController: NSObject {
         }
     }
 
+    /// 上缘光标的箭头：到了最高只剩向下，到了最低只剩向上。
+    private func updateResizeDirections() {
+        let m = PanelMetrics.self
+        resizeHandle.directions = panelHeight >= m.maxWindowHeight ? .inward : panelHeight <= m.minWindowHeight ? .outward : .all
+    }
+
     var canResetPanelHeight: Bool { !preferences.panelHeightLocked && panelHeight != PanelMetrics.windowHeight }
 
     /// 双击上缘或从菜单恢复默认高度，0.2 秒缓动过去。锁定时不动，锁晃一下。
@@ -1043,7 +1160,13 @@ final class PanelController: NSObject {
         guard !preferences.panelHeightLocked else { lockBadge.shake(); return }
         let target = PanelMetrics.windowHeight
         preferences.panelHeight = Double(target)
+        animatePanelHeight(to: target)
+    }
+
+    /// 0.2 秒缓动到目标高度（面板没显示或开了“减弱动态效果”时直接到位）。只改面板，不改偏好。
+    private func animatePanelHeight(to target: CGFloat) {
         heightAnimation?.invalidate()
+        heightAnimation = nil
         guard panelHeight != target else { return }
         guard panel.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             setPanelHeight(target)
@@ -1957,7 +2080,7 @@ final class PanelController: NSObject {
     private func showMoreMenu(from anchor: NSView) {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        addMoreMenuItems(to: menu, includesAboutAndHelp: false)
+        addMoreMenuItems(to: menu)
         // 面板高度的两项放在“设置…”前面一组；菜单栏图标的菜单里没有（那时面板不在眼前）。
         if let settings = menu.items.firstIndex(where: { $0.keyEquivalent == "," }) {
             var index = settings
@@ -1975,13 +2098,8 @@ final class PanelController: NSObject {
         if pauseStatus().isPaused { onResume?() } else { hide { [weak self] in self?.onPause?(nil) } }
     }
 
-    /// `includesAboutAndHelp` 为 false 时不放“关于”“帮助”（面板的“…”菜单，免得菜单太高被折叠；菜单栏图标的菜单里仍有）。
-    func addMoreMenuItems(to menu: NSMenu, includesAboutAndHelp: Bool = true) {
-        if includesAboutAndHelp {
-            menu.addItem(ClosureMenuItem(String(localized: "关于 XPaste")) { [weak self] in self?.onAbout?() })
-            menu.addItem(ClosureMenuItem(String(localized: "XPaste 帮助")) { [weak self] in self?.onHelp?() })
-            menu.addItem(.separator())
-        }
+    /// 两处都不放“关于”“帮助”“检查更新”：关于和检查更新在设置的“关于”页，帮助在设置窗口右上角的“?”（用户要求，2026-11-25）。
+    func addMoreMenuItems(to menu: NSMenu) {
         menu.addItem(ClosureMenuItem(String(localized: "新文本项")) { [weak self] in self?.newTextItem() })
         let settings = ClosureMenuItem(String(localized: "设置…")) { [weak self] in self?.onSettings?() }
         settings.keyEquivalent = ","
@@ -2800,14 +2918,23 @@ extension PanelController {
     var debugPreferences: AppPreferences { preferences }
     var debugWindowHeight: CGFloat { panel.frame.height }
     func debugDragHeight(by delta: CGFloat, ended: Bool) { resizePanel(by: delta, ended: ended) }
-    var debugHeightTip: (text: String, visible: Bool) { (heightTip.text, heightTip.isShown) }
+    var debugHeightTip: (text: String, visible: Bool) { (heightLabel.stringValue, !heightLabel.isHidden) }
+    func debugBeginHeightDrag() { beginHeightDrag() }
+    var debugPanelIgnoresMouseEvents: Bool { panel.ignoresMouseEvents }
+    /// 窗口外框，以及玻璃上缘在屏幕上的纵坐标。
+    var debugHeightDragGeometry: (window: NSRect, glassTop: CGFloat, handleCoversExtension: Bool) {
+        let glassTop = panel.frame.minY + panelHeight
+        let handle = resizeHandle.convert(resizeHandle.bounds, to: nil)
+        return (panel.frame, glassTop, handle.maxY >= panel.frame.height - 0.5 && handle.minY <= panelHeight - PanelMetrics.resizeHandleHeight + 0.5)
+    }
     var debugLockBadgeVisible: Bool { !lockBadge.isHidden }
     var debugEdgeGlowLit: Bool { edgeGlow.isLit }
     func debugHoverEdge(_ value: Bool) { resizeHandle.debugHover(value) }
+    var debugResizeDirections: NSCursor.FrameResizeDirection.Set { resizeHandle.directions }
     func debugClickLockBadge() { lockBadge.performClick(nil) }
     var debugMoreMenuTitles: [String] {
         let menu = NSMenu()
-        addMoreMenuItems(to: menu, includesAboutAndHelp: false)
+        addMoreMenuItems(to: menu)
         return menu.items.map(\.title)
     }
     func debugDoubleClickHeightHandle() { resizeHandle.onDoubleClick?() }

@@ -927,6 +927,24 @@ enum SelfTest {
             let defaultHeight = PanelMetrics.windowHeight
             check("默认高度 332，卡片边长 234", defaultHeight == 332 && PanelMetrics.cardSide(windowHeight: defaultHeight) == 234)
             let heightBefore = panel.debugPanelHeight
+            // 按下上缘：同一个窗口向上扩展到屏幕顶，玻璃上缘留在原位；拖动中外框不变，只有玻璃上缘移动；松手恢复
+            check("面板显式接收鼠标，透明区域也算面板的（拖上缘时扩展区不被下面的应用抢走光标）", !panel.debugPanelIgnoresMouseEvents)
+            let geometryBefore = panel.debugHeightDragGeometry
+            panel.debugBeginHeightDrag()
+            let expanded = panel.debugHeightDragGeometry
+            let screenTop = NSScreen.screens.first { $0.frame.contains(NSPoint(x: geometryBefore.window.midX, y: geometryBefore.window.minY + 1)) }?.frame.maxY ?? 0
+            check("按下上缘时窗口扩展到屏幕顶、玻璃上缘不动、热区盖住扩展区，数字出现",
+                  expanded.window.maxY == screenTop && expanded.window.minY == geometryBefore.window.minY && expanded.glassTop == geometryBefore.glassTop
+                  && expanded.handleCoversExtension && panel.debugHeightTip == ("\(Int(heightBefore)) pt", true), "\(expanded) \(geometryBefore)")
+            panel.debugDragHeight(by: 30, ended: false)
+            let dragging = panel.debugHeightDragGeometry
+            check("拖动中窗口外框不变，只有玻璃上缘跟着移动", dragging.window == expanded.window && dragging.glassTop == geometryBefore.glassTop + 30
+                  && dragging.handleCoversExtension, "\(dragging)")
+            panel.debugDragHeight(by: 30, ended: true)
+            let afterRelease = panel.debugHeightDragGeometry
+            check("松手后窗口恢复到面板高度，数字隐藏", afterRelease.window.height == heightBefore + 30 && afterRelease.window.maxY == afterRelease.glassTop
+                  && !panel.debugHeightTip.visible, "\(afterRelease)")
+            panel.debugDragHeight(by: -30, ended: true)
             panel.debugDragHeight(by: 380 - heightBefore, ended: false)
             check("拖动上缘到 380，光标上方显示当前高度", panel.debugPanelHeight == 380 && panel.debugWindowHeight == 380
                   && panel.debugHeightTip == ("380 pt", true), "\(panel.debugPanelHeight) \(panel.debugHeightTip)")
@@ -934,6 +952,31 @@ enum SelfTest {
             check("经过默认高度附近不吸附", panel.debugPanelHeight == defaultHeight + 4, "\(panel.debugPanelHeight)")
             panel.debugDragHeight(by: 380 - heightBefore, ended: true)
             check("松手后记住高度", panel.debugPanelHeight == 380 && heightPrefs.panelHeight == 380)
+            check("中间高度时上缘光标上下都能拖", panel.debugResizeDirections == .all)
+            func waitHeightAnimation() async {
+                let begin = ContinuousClock.now
+                while panel.debugHeightAnimating, ContinuousClock.now - begin < .seconds(1) { try? await Task.sleep(for: .milliseconds(20)) }
+            }
+            // 照原版：超出最高 80 只多伸 9（平方根），松手缓动收回最高再保存
+            panel.debugDragHeight(by: PanelMetrics.maxWindowHeight + 80 - 380, ended: false)
+            let stretchedUp = panel.debugPanelHeight
+            let tipWhileStretched = panel.debugHeightTip
+            panel.debugDragHeight(by: PanelMetrics.maxWindowHeight + 80 - 380, ended: true)
+            await waitHeightAnimation()
+            check("拖过最高按平方根少量伸出，提示显示最高，松手收回最高并记住", stretchedUp == PanelMetrics.maxWindowHeight + 9
+                  && tipWhileStretched == ("412 pt", true) && panel.debugPanelHeight == PanelMetrics.maxWindowHeight
+                  && heightPrefs.panelHeight == Double(PanelMetrics.maxWindowHeight), "\(stretchedUp) \(tipWhileStretched) \(panel.debugPanelHeight)")
+            let atMax = panel.debugResizeDirections
+            panel.debugDragHeight(by: PanelMetrics.minWindowHeight - 80 - PanelMetrics.maxWindowHeight, ended: false)
+            let stretchedDown = panel.debugPanelHeight
+            panel.debugDragHeight(by: PanelMetrics.minWindowHeight - 80 - PanelMetrics.maxWindowHeight, ended: true)
+            await waitHeightAnimation()
+            check("拖过最低按平方根少量缩进，松手收回最低并记住", stretchedDown == PanelMetrics.minWindowHeight - 9
+                  && panel.debugPanelHeight == PanelMetrics.minWindowHeight && heightPrefs.panelHeight == Double(PanelMetrics.minWindowHeight),
+                  "\(stretchedDown) \(panel.debugPanelHeight)")
+            let atMin = panel.debugResizeDirections
+            panel.debugDragHeight(by: 380 - PanelMetrics.minWindowHeight, ended: true)
+            check("到了最高光标只剩向下，最低只剩向上", atMax == .inward && atMin == .outward && panel.debugPanelHeight == 380, "\(atMax) \(atMin)")
             check("指针不在上缘时没有柔光", !panel.debugEdgeGlowLit)
             panel.debugHoverEdge(true)
             check("没锁定、指针移到上缘时面板上方亮起柔光", panel.debugEdgeGlowLit)
@@ -1074,8 +1117,11 @@ enum SelfTest {
             let hoveredRow = stackList.debugRowFrames[1]
             check("× 叠在指针所在那一行的右上角", removeFrame.maxX > hoveredRow.maxX && removeFrame.midX < hoveredRow.maxX
                   && removeFrame.minY < hoveredRow.minY && removeFrame.midY > hoveredRow.minY, "× \(removeFrame) 行 \(hoveredRow)")
+            let hoverEmphasis = stackList.debugHoverEmphasis(row: 1)
+            check("指针所在的卡片略微放大、换成悬停的样子", hoverEmphasis?.grown == true && hoverEmphasis?.emphasis == .hover, "\(String(describing: hoverEmphasis))")
+            check("× 是 14 点的小圆", removeFrame.width == StackListView.removeSide, "\(removeFrame)")
             let hoverRemove = stackList.debugHoverRemoveButton()
-            check("指针移到 × 上它换样子", hoverRemove.hovering)
+            check("指针移到 × 上它放大、变暗红", hoverRemove.hovering && hoverRemove.frame.width > StackListView.removeSide)
             stackList.debugClickRemove()
             check("点 × 移除的是这一行", stack.debugTitles == ["改版 甲", "改版 丙", "改版 丁"], "\(stack.debugTitles)")
             stack.undo()
@@ -1089,6 +1135,12 @@ enum SelfTest {
             check("拖出被别的应用收下：这一行离开 Stack，不冒云团，可以撤销", !acceptedPoof
                   && stack.debugTitles == ["改版 甲", "改版 丙", "改版 丁"] && stack.debugUndoVisible, "\(stack.debugTitles)")
             stack.undo()
+            // 窗口里拖动排序：拖的是卡片本身，浮在最上层；按它的中线算位置，松手后顺序跟着变
+            let liftFrames = stackList.debugRowFrames
+            let lift = stackList.debugLiftDrag(row: 0, toMiddle: liftFrames[2].midY + 2)
+            check("拖动排序时卡片浮起、在最上层，拖过第三张的中线后落在它后面", lift.liftedOnTop && lift.dropIndex == 2
+                  && stack.debugTitles == ["改版 乙", "改版 丙", "改版 甲", "改版 丁"], "\(lift) \(stack.debugTitles)")
+            stack.move(uid: stack.debugUIDs[2], to: 0)
             check("“…”菜单有全部粘贴、反转顺序、以纯文本粘贴", stack.debugMenuTitles().filter { !$0.isEmpty } == ["全部粘贴", "反转顺序", "以纯文本粘贴"],
                   "\(stack.debugMenuTitles())")
             let stackPicture = try store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
@@ -1205,17 +1257,25 @@ enum SelfTest {
                   && movedBack.size == offscreen.size && tooBig == visibleArea
                   && WindowPlacement.isUsable(NSRect(x: 100, y: 100, width: 640, height: 592), in: visibleArea), "\(movedBack)")
 
-            // 检查更新：版本号按数字逐段比较；没有配置仓库时不发请求，提示还没有发布。
-            let versionsOK = UpdateChecker.isNewer("0.10.0", than: "0.9.2") && UpdateChecker.isNewer("1.0", than: "0.9.9")
-                && !UpdateChecker.isNewer("0.1.0", than: "0.1") && !UpdateChecker.isNewer("0.1.0-beta", than: "0.1.0")
-                && UpdateChecker.isNewer("0.1.1", than: "0.1.0")
-            check("检查更新的版本比较", versionsOK)
-            check("没有配置仓库时检查更新不联网", await UpdateChecker.check(repository: nil) == .notPublished)
+            // 检查更新交给 Sparkle：自检里不启动更新，不联网；更新源和公钥写在 Info.plist，定时检查关着。
+            let info = Bundle.main.infoDictionary ?? [:]
+            check("更新源指向正式 Release 附带的 appcast，带公钥，关掉定时检查",
+                  info["SUFeedURL"] as? String == "https://github.com/davie-01/Xpaste/releases/latest/download/appcast.xml"
+                  && (info["SUPublicEDKey"] as? String)?.isEmpty == false && info["SUEnableAutomaticChecks"] as? Bool == false
+                  && !Updates.shared.canCheckForUpdates, "\(info["SUFeedURL"] ?? "nil")")
             // 帮助窗口能排出来，快捷键按当前设置显示。
             let help = NSHostingView(rootView: HelpView(preferences: preferences))
             help.frame = NSRect(x: 0, y: 0, width: 560, height: 640)
             help.layoutSubtreeIfNeeded()
             check("帮助窗口能排版", help.fittingSize.height > 100, "\(help.fittingSize)")
+            // 每个主题一页，在固定大小的窗口里放得下，不用滚动（用户真机）。
+            let pageWidth = HelpWindowController.size.width - HelpView.sidebarWidth - 1
+            let pageHeights = HelpView(preferences: preferences).topics.map { topic -> CGFloat in
+                let page = NSHostingView(rootView: HelpPage(topic: topic).frame(width: pageWidth))
+                return page.fittingSize.height
+            }
+            check("帮助的每一页都放得下，不用滚动", pageHeights.count == 8 && pageHeights.allSatisfy { $0 <= HelpWindowController.size.height },
+                  "\(pageHeights.map { Int($0) })")
             soundOn = true
             let threadsIdle = threadCount()
             for _ in 0..<100 {

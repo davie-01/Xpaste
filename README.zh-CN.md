@@ -35,15 +35,19 @@ XPaste 记下你复制过的内容（文本、富文本、图片、链接、颜�
 
 ## 安装
 
-目前还没有发布版本。以后会放在 [Releases](https://github.com/davie-01/Xpaste/releases) 页面，是一个 zip 包加一个 SHA-256 校验文件。
+从 [Releases](https://github.com/davie-01/Xpaste/releases) 页面下载最新版本，是一个 zip 包加一个 SHA-256 校验文件。
 
-安装包是 ad-hoc 签名，没有经过苹果公证，下载后会被系统隔离。解压并把 XPaste 放进 `/Applications` 后：
+发布包用 Apple Development 证书签名，但没有经过苹果公证，下载后会被系统隔离。解压并把 XPaste 放进 `/Applications` 后：
 
 ```sh
 shasum -a 256 -c XPaste-<版本>-arm64.zip.sha256   # 校验下载的文件
 xattr -dr com.apple.quarantine /Applications/XPaste.app
 open /Applications/XPaste.app
 ```
+
+### 更新
+
+XPaste 用 [Sparkle](https://sparkle-project.org) 更新。每次启动时检查一次有没有新版本，有才提示；其余时候只在你点菜单栏菜单或“设置 › 关于”里的“检查更新…”时联网，启动时的检查也可以在“关于”里关掉。更新包在安装前会校验 EdDSA 签名。
 
 ## 从源码构建
 
@@ -66,7 +70,7 @@ xcodebuild -project XPaste.xcodeproj -scheme XPaste -configuration Debug -derive
 open build/DerivedData/Build/Products/Debug/XPaste.app
 ```
 
-`project.yml` 里用的是作者的开发团队（`DEVELOPMENT_TEAM`）签名，请换成你自己的团队 ID，或者用 `Tools/package.sh`，它用 ad-hoc 签名。Debug 版的快捷键是 ⌃⇧⌘V 和 ⌃⇧⌘C，数据也单独存放，可以和发布版同时运行。
+`project.yml` 里用的是作者的开发团队（`DEVELOPMENT_TEAM`）签名，请换成你自己的团队 ID，或者用 `Tools/package.sh`，它用 ad-hoc 签名。Debug 版的默认快捷键是 ⌃⇧⌘V 和 ⌃⇧⌘C，历史记录单独存放；但设置（包括改过的快捷键）和发布版共用同一个 bundle id 下的偏好，同时运行时快捷键可能冲突，建议一次只开一个。
 
 测试和检查：
 
@@ -79,9 +83,9 @@ XPASTE_SELFTEST=1 build/DerivedData/Build/Products/Debug/XPaste.app/Contents/Mac
 
 ## 权限和隐私
 
-- **设备控制和数据访问**（旧版 macOS 叫“辅助功能”）：直接粘贴到正在用的应用、以及 Paste Stack 需要它。没有授权时，XPaste 只把内容放进剪贴板，由你自己按 ⌘V。这个授权和代码签名绑定，每次换了 ad-hoc 签名的新版本都要重新允许。
+- **设备控制和数据访问**（旧版 macOS 叫“辅助功能”）：直接粘贴到正在用的应用、以及 Paste Stack 需要它。没有授权时，XPaste 只把内容放进剪贴板，由你自己按 ⌘V。这个授权和代码签名绑定：发布版本的签名身份不变，更新后授权还在；自己打的包（ad-hoc 签名）每次都要重新允许。
 - **文件和文件夹**：第一次粘贴从桌面、文稿、下载、移动硬盘或网络磁盘复制来的文件时，系统会询问。
-- **网络**：只用来获取链接的标题和配图、显示网页预览，两项都可以在“设置 › 隐私”里关掉；本机和内网地址一律不加载。
+- **网络**：只用来获取链接的标题和配图、显示网页预览，以及到 GitHub 检查更新。前两项可以在“设置 › 隐私”里关掉，启动时检查更新可以在“设置 › 关于”里关掉；本机和内网地址一律不加载。
 - **数据**：都留在你的 Mac 上，在 `~/Library/Application Support/XPaste`。没有同步、账号、统计或遥测。
 - **屏幕共享**：“在屏幕共享期间显示”关掉后，XPaste 的窗口会标记为不可共享。很多现在的录屏和共享工具不理会这个标记，所以它不能防截图或防录屏。
 
@@ -104,4 +108,5 @@ MIT，见 [LICENSE](LICENSE)。用到的第三方组件见 [THIRD_PARTY_NOTICES.
 
 - 灵感来自 [**Paste**](https://pasteapp.io/)，请支持原版。
 - 数据库用的是 [GRDB.swift](https://github.com/groue/GRDB.swift)。
+- 更新用的是 [Sparkle](https://sparkle-project.org)。
 - 界面用 AppKit 和 SwiftUI，另外用到苹果的 Vision（文字识别、移除背景）、WebKit（网页预览）和 Network（MCP 服务）。

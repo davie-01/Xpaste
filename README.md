@@ -35,15 +35,19 @@ So XPaste follows Paste's ideas and workflow closely, but it is an independent r
 
 ## Install
 
-There is no release yet. When there is, it will be on the [Releases](https://github.com/davie-01/Xpaste/releases) page as a zip with a SHA-256 checksum.
+Download the latest version from the [Releases](https://github.com/davie-01/Xpaste/releases) page. It is a zip with a SHA-256 checksum.
 
-The build is ad-hoc signed and not notarized, so macOS quarantines it after download. After unzipping and moving XPaste to `/Applications`:
+Releases are signed with an Apple Development certificate but not notarized, so macOS quarantines them after download. After unzipping and moving XPaste to `/Applications`:
 
 ```sh
 shasum -a 256 -c XPaste-<version>-arm64.zip.sha256   # check the download
 xattr -dr com.apple.quarantine /Applications/XPaste.app
 open /Applications/XPaste.app
 ```
+
+### Updates
+
+XPaste uses [Sparkle](https://sparkle-project.org). It checks for a new version once each time it starts and only speaks up when there is one; otherwise it goes online for updates only when you choose **Check for Updates…** in the menu bar menu or in Settings › About, where the launch check can also be turned off. Updates are verified with an EdDSA signature before they are installed.
 
 ## Build from source
 
@@ -66,7 +70,7 @@ xcodebuild -project XPaste.xcodeproj -scheme XPaste -configuration Debug -derive
 open build/DerivedData/Build/Products/Debug/XPaste.app
 ```
 
-`project.yml` signs with the author's team (`DEVELOPMENT_TEAM`). Replace it with your own team ID, or build with `Tools/package.sh`, which signs ad-hoc. The Debug build uses ⌃⇧⌘V and ⌃⇧⌘C so it can run next to a release build, and keeps its data separately.
+`project.yml` signs with the author's team (`DEVELOPMENT_TEAM`). Replace it with your own team ID, or build with `Tools/package.sh`, which signs ad-hoc. The Debug build defaults to ⌃⇧⌘V and ⌃⇧⌘C and keeps its history separately, but it shares preferences (including any shortcuts you changed) with the release build under the same bundle id, so run one at a time to avoid shortcut conflicts.
 
 Tests and checks:
 
@@ -79,9 +83,9 @@ XPASTE_SELFTEST=1 build/DerivedData/Build/Products/Debug/XPaste.app/Contents/Mac
 
 ## Permissions and privacy
 
-- **Device control and data access** (called Accessibility on older macOS) is needed to paste directly into the app you are using and for Paste Stack. Without it, XPaste copies to the clipboard and you press ⌘V yourself. The grant is tied to the code signature, so every new ad-hoc build has to be allowed again.
+- **Device control and data access** (called Accessibility on older macOS) is needed to paste directly into the app you are using and for Paste Stack. Without it, XPaste copies to the clipboard and you press ⌘V yourself. The grant is tied to the code signature: releases keep the same signing identity, so it survives updates, but a build you package yourself (ad-hoc signed) has to be allowed again.
 - **Files and folders**: macOS asks the first time you paste a file copied from Desktop, Documents, Downloads, a removable disk or a network volume.
-- **Network**: only used to fetch link titles and preview images, and to show web page previews. Both can be turned off in Settings › Privacy. Local and private network addresses are never loaded.
+- **Network**: only used to fetch link titles and preview images, to show web page previews, and to check GitHub for updates. Link titles and web previews can be turned off in Settings › Privacy, the update check at launch in Settings › About. Local and private network addresses are never loaded.
 - **Data** stays on your Mac, in `~/Library/Application Support/XPaste`. There is no sync, account, analytics or telemetry.
 - **Screen sharing**: the "show during screen sharing" switch marks XPaste's windows as not shareable. Many current recording and sharing tools ignore this marker, so it is not protection against screenshots or recording.
 
@@ -104,4 +108,5 @@ MIT. See [LICENSE](LICENSE). Third-party components are listed in [THIRD_PARTY_N
 
 - Inspired by [**Paste**](https://pasteapp.io/) — please support the original.
 - [GRDB.swift](https://github.com/groue/GRDB.swift) for SQLite.
+- [Sparkle](https://sparkle-project.org) for updates.
 - Built with AppKit and SwiftUI on Apple's frameworks: Vision for text recognition and background removal, WebKit for web previews and Network for the MCP server.

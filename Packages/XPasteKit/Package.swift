@@ -12,7 +12,9 @@ let package = Package(
         .library(name: "MCPBridge", targets: ["MCPBridge"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
+        // 写死版本：本目录的 Package.resolved 不入库（xcodebuild 和 swift test 会来回改写它），版本由这里决定。
+        // 升级时改这里、跑自检和测试，同时更新 THIRD_PARTY_NOTICES.md。见 Docs/design.md“依赖版本的锁定”。
+        .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.12.0"),
     ],
     targets: [
         .target(name: "ClipboardKit"),

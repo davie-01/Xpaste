@@ -22,7 +22,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         model.onFinish = { [weak self] in self?.close() }
-        let hostingView = NSHostingView(rootView: OnboardingView(model: model, preferences: preferences, onRetention: onRetention,
+        let hostingView = makeHostingView(OnboardingView(model: model, preferences: preferences, onRetention: onRetention,
                                                                  onKeyboardChange: onKeyboardChange, onRecording: onRecording))
         hostingView.sizingOptions = []
         window.contentView = hostingView
@@ -99,8 +99,6 @@ private struct OnboardingView: View {
         .padding(.top, 28)
         .frame(width: OnboardingWindowController.size.width, height: OnboardingWindowController.size.height)
         .ignoresSafeArea()
-        // 不显示系统的蓝色焦点环；按钮靠悬停和按下的底色变化给出反馈。
-        .focusEffectDisabled()
     }
 
     private var primaryTitle: String {

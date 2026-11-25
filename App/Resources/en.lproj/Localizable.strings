@@ -296,16 +296,8 @@
 
 /* 关于页、检查更新、帮助窗口（M5 第 11 步） */
 "版本 %@（%@）" = "Version %@ (%@)";
-"检查更新" = "Check for Updates";
-"正在检查…" = "Checking…";
 "在 GitHub 上查看" = "View on GitHub";
 "MIT 许可证 · 免费开源" = "MIT License · Free and open source";
-"已是最新版本" = "You’re up to date";
-"有新版本 %@" = "Version %@ is available";
-"前往下载页" = "Go to Download Page";
-"还没有发布过版本" = "No release has been published yet";
-"检查更新失败" = "Couldn’t check for updates";
-"服务器返回了错误（%lld）。" = "The server returned an error (%lld).";
 "帮助" = "Help";
 "XPaste 帮助" = "XPaste Help";
 "（未设置）" = "(not set)";
@@ -359,3 +351,9 @@
 "恢复默认高度（%lld pt）" = "Restore Default Height (%lld pt)";
 "拖动面板上缘调整高度，双击上缘恢复默认高度；右键上缘可以锁定高度。" = "Drag the top edge of the panel to change its height, and double-click it to restore the default. Right-click the top edge to lock the height.";
 "面板高度已锁定，点按解锁" = "Panel height locked. Click to unlock.";
+"常用功能和快捷键" = "Features and shortcuts";
+
+/* 应用内更新（Sparkle） */
+"检查更新…" = "Check for Updates…";
+"启动时检查更新" = "Check for updates at launch";
+"只在启动时检查一次，有新版本才提示；关掉后只在点“检查更新…”时联网。" = "Checks once when XPaste starts and only speaks up if there is a new version. When off, XPaste goes online for updates only when you click “Check for Updates…”.";
