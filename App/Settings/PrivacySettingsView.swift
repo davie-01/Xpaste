@@ -78,9 +78,13 @@ struct PrivacySettingsView: View {
                 }.buttonStyle(.plain).padding(.horizontal, 4).padding(.vertical, 3)
             }.background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12)).clipShape(RoundedRectangle(cornerRadius: 12))
         }
-        .alert(String(localized: "无法添加应用"), isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-            Button("好") { error = nil }
-        } message: { Text(error ?? "") }
+        .onChange(of: error) { _, message in
+            guard let message else { return }
+            DispatchQueue.main.async {
+                NSAlert.showMessage(String(localized: "无法添加应用"), detail: message)
+                error = nil
+            }
+        }
     }
 
     private var applications: [IgnoredApplication] {

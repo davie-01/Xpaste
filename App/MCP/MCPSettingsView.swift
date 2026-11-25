@@ -154,9 +154,13 @@ struct MCPSettingsView: View {
             }
         }
         .sheet(isPresented: $showingAdvanced) { AdvancedView(model: model) { showingAdvanced = false } }
-        .alert(String(localized: "连接设置没有保存"), isPresented: Binding(get: { model.storageError != nil }, set: { if !$0 { model.storageError = nil } })) {
-            Button("好") { model.storageError = nil }
-        } message: { Text(model.storageError ?? "") }
+        .onChange(of: model.storageError) { _, message in
+            guard let message else { return }
+            DispatchQueue.main.async {
+                NSAlert.showMessage(String(localized: "连接设置没有保存"), detail: message)
+                model.storageError = nil
+            }
+        }
     }
 
     private func disconnect(_ client: MCPClient) {

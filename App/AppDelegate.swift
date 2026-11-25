@@ -72,6 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { await SelfTest.run() }
             return
         }
+        // 核对完全磁盘访问的检测：XPASTE_FDA_REPORT=<文件> 时把结果写进文件后退出。要用 open 启动，结果才是本应用自己的授权。
+        if let report = ProcessInfo.processInfo.environment["XPASTE_FDA_REPORT"] {
+            try? "fullDiskAccess=\(FullDiskAccess.isGranted) directPaste=\(DirectPastePermission.isTrusted)\n".write(toFile: report, atomically: true, encoding: .utf8)
+            exit(0)
+        }
         // 手工核对取链接信息：XPASTE_FETCH_URL=<网址> 时取一次、打印结果后退出。
         if let address = ProcessInfo.processInfo.environment["XPASTE_FETCH_URL"], let url = URL(string: address) {
             Task {
@@ -93,14 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             #endif
         } catch {
             // 数据库打不开时不带着空库继续运行，避免之后把旧数据覆盖掉。
-            let alert = NSAlert()
-            alert.messageText = String(localized: "无法打开 XPaste 的数据库")
-            if error is HistoryStore.NewerDatabaseError {
-                alert.informativeText = String(localized: "数据库已被更新版本的 XPaste 使用过，这个版本不会改动它。请改用更新的版本。\n\n数据目录：\(Self.dataDirectory.path)")
-            } else {
-                alert.informativeText = String(localized: "\(error.localizedDescription)\n\n数据目录：\(Self.dataDirectory.path)")
-            }
-            alert.runModal()
+            let detail = error is HistoryStore.NewerDatabaseError
+                ? String(localized: "数据库已被更新版本的 XPaste 使用过，这个版本不会改动它。请改用更新的版本。\n\n数据目录：\(Self.dataDirectory.path)")
+                : String(localized: "\(error.localizedDescription)\n\n数据目录：\(Self.dataDirectory.path)")
+            NSAlert.showMessage(String(localized: "无法打开 XPaste 的数据库"), detail: detail, style: .critical)
             NSApp.terminate(nil)
             return
         }
@@ -207,11 +208,160 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if environment["XPASTE_SIMULATE_UNTRUSTED"] == "1" || environment["XPASTE_SHOW_PANEL"] == "1" { panelController.show() }
             else { showSettings() }
             if let directory = environment["XPASTE_SNAPSHOT_DIR"] { Task { await writeSnapshots(to: URL(fileURLWithPath: directory)) } }
+            if let directory = environment["XPASTE_GALLERY_DIR"] { Task { await writeGallery(to: URL(fileURLWithPath: directory)) } }
         }
         #endif
     }
 
     #if DEBUG
+    /// 弹窗和带按钮页面的图库（XPASTE_GALLERY_DIR=<目录>，只在测试域里）：把每个弹窗、设置页、引导页、帮助、面板、编辑器、Stack
+    /// 依次在屏幕上打开，用 screencapture 按窗口编号截图（不按坐标截，只拍 XPaste 自己的窗口），截完关掉，最后退出。
+    /// 阻塞式的弹窗先排定时器再弹：定时器在弹窗显示时截图并中止等待，返回的是“中止”，不会执行任何按钮的操作。
+    /// 能直接调用的走真实代码；写在私有方法里的照原样重建（同样的文案、按钮、回车和 Esc），文件名里标“重建”。
+    private func writeGallery(to directory: URL) async {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var index = 0
+        func numbered(_ name: String) -> String {
+            index += 1
+            return String(format: "%02d-%@", index, name)
+        }
+        // 系统确认框的内容由系统另外绘制，按窗口截图是白的，改截它所在的屏幕区域（就是它自己的边框）；
+        // 截图期间后面铺一层 XPaste 自己的纯色窗口，区域里不会拍到别的应用。
+        @Sendable func shoot(_ window: NSWindow?, _ fileName: String, region: Bool = false) {
+            guard let window, window.isVisible else { print("GALLERY 没有窗口：\(fileName)"); return }
+            let file = directory.appendingPathComponent(fileName + ".png")
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            if region, let primary = NSScreen.screens.first {
+                let frame = window.frame.insetBy(dx: -24, dy: -24)
+                let top = primary.frame.maxY - frame.maxY
+                process.arguments = ["-x", "-R\(Int(frame.minX)),\(Int(top)),\(Int(frame.width)),\(Int(frame.height))", file.path]
+            } else {
+                process.arguments = ["-x", "-o", "-l\(window.windowNumber)", file.path]
+            }
+            try? process.run()
+            process.waitUntilExit()
+            print("GALLERY \(file.lastPathComponent)")
+        }
+        func capture(_ window: NSWindow?, _ name: String) {
+            let fileName = numbered(name)
+            if let only = ProcessInfo.processInfo.environment["XPASTE_GALLERY_ONLY"], !name.contains(only) { return }
+            shoot(window, fileName)
+        }
+        let only = ProcessInfo.processInfo.environment["XPASTE_GALLERY_ONLY"]
+        func captureModal(_ name: String, _ present: () async -> Void) async {
+            let fileName = numbered(name)
+            if let only, !name.contains(only) { return }
+            let timer = Timer(timeInterval: 1.2, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    let window = NSApp.modalWindow
+                    shoot(window, fileName, region: window is NSPanel && !(String(describing: type(of: window!)).contains("QuestionPanel")))
+                    window?.orderOut(nil)
+                    NSApp.abortModal()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            await present()
+            try? await Task.sleep(for: .milliseconds(800))
+        }
+        func rebuilt(_ title: String, _ detail: String?, _ buttons: [String], defaultButton: Int, cancelButton: Int?, destructive: Int? = nil, warning: Bool = false) {
+            let alert = NSAlert()
+            if warning { alert.alertStyle = .warning }
+            alert.messageText = title
+            if let detail { alert.informativeText = detail }
+            buttons.forEach { alert.addButton(withTitle: $0) }
+            if let destructive { alert.buttons[destructive].hasDestructiveAction = true }
+            WindowSharing.apply(to: alert.window)
+            _ = alert.runModal(defaultButton: defaultButton, cancelButton: cancelButton)
+        }
+        func window(named className: String) -> NSWindow? {
+            NSApp.windows.first { String(describing: type(of: $0)).contains(className) && $0.isVisible }
+        }
+        settingsController.close()
+        let backdrop = NSWindow(contentRect: NSScreen.screens.first?.frame ?? .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        backdrop.backgroundColor = NSColor.windowBackgroundColor
+        backdrop.level = .floating
+        backdrop.ignoresMouseEvents = true
+        backdrop.orderFrontRegardless()
+        try? await Task.sleep(for: .milliseconds(500))
+
+        // 一、确认框
+        await captureModal("弹窗-删除所选4项") { _ = self.panelController.confirmBatchDelete(4, true) }
+        await captureModal("弹窗-删除所选300项-无法撤销") { _ = self.panelController.confirmBatchDelete(300, false) }
+        await captureModal("弹窗-删除Pinboard") { self.panelController.debugConfirmDeleteFirstPinboard() }
+        await captureModal("弹窗-删除所有历史") {
+            _ = SettingsActions.confirm(title: String(localized: "删除所有历史记录？"), detail: String(localized: "未固定的历史项目将永久删除。已固定的项目和 Pinboard 会保留，此操作无法撤销。"), action: String(localized: "删除"))
+        }
+        await captureModal("弹窗-缩短保留期限") {
+            _ = SettingsActions.confirm(title: String(localized: "缩短历史保留期限？"), detail: String(localized: "超过新保留期限的历史将被清理。已固定的项目会保留，清理无法撤销。"),
+                                       action: String(localized: "缩短"))
+        }
+        await captureModal("弹窗-恢复默认快捷键-重建") {
+            rebuilt(String(localized: "恢复所有默认快捷键？"), String(localized: "四个快捷键和两种修饰键将恢复为默认设置。"), [String(localized: "取消"), String(localized: "重置")], defaultButton: 0, cancelButton: 0, destructive: 1)
+        }
+        await captureModal("弹窗-断开MCP连接-重建") {
+            rebuilt(String(localized: "要断开“\("Claude Code")”的连接吗？"), String(localized: "断开后，\("Claude Code") 要重新连接才能使用 XPaste。"),
+                    [String(localized: "取消"), String(localized: "断开连接")], defaultButton: 0, cancelButton: 0, destructive: 1)
+        }
+        await captureModal("弹窗-更改端口-重建") {
+            rebuilt(String(localized: "更改端口？"), String(localized: "所有已连接的 AI 工具都将断开并移除，需要重新连接。"), [String(localized: "取消"), String(localized: "更改")], defaultButton: 0, cancelButton: 0)
+        }
+        await captureModal("弹窗-允许MCP连接") { _ = await MCPController.askApproval(clientName: "Claude Code") }
+        let sample = URL(fileURLWithPath: "/Users/Shared/示例文件夹/报告.pdf")
+        await captureModal("弹窗-无法粘贴文件-缺权限") { FileAccess.presentFailure(FileAccess.Result(denied: [sample])) }
+        await captureModal("弹窗-启用直接粘贴") { _ = DirectPasteQuestion(appName: "备忘录").run() }
+
+        // 二、只有“好”的提示框
+        await captureModal("提示-文件已不存在") { FileAccess.presentFailure(FileAccess.Result(missing: [sample])) }
+        await captureModal("提示-读取文件出错") { FileAccess.presentFailure(FileAccess.Result(unreadable: [sample])) }
+        await captureModal("提示-无法打开数据库-重建") {
+            rebuilt(String(localized: "无法打开 XPaste 的数据库"), String(localized: "数据库已被更新版本的 XPaste 使用过，这个版本不会改动它。请改用更新的版本。\n\n数据目录：\(Self.dataDirectory.path)"),
+                    [String(localized: "好")], defaultButton: 0, cancelButton: 0)
+        }
+        await captureModal("提示-快捷键不可用-重建") {
+            rebuilt(String(localized: "快捷键不可用"), "⇧⌘V 已被其他应用占用。", [String(localized: "好")], defaultButton: 0, cancelButton: 0)
+        }
+        await captureModal("提示-登录时打开失败-重建") {
+            rebuilt(String(localized: "登录时打开"), "需要在“系统设置 › 通用 › 登录项”中允许 XPaste。", [String(localized: "好")], defaultButton: 0, cancelButton: 0)
+        }
+        await captureModal("提示-无法更改设置-SwiftUI提示框重建") {
+            rebuilt(String(localized: "无法更改设置"), "写入设置时出错。", [String(localized: "好")], defaultButton: 0, cancelButton: 0)
+        }
+
+        backdrop.orderOut(nil)
+        // 三、带按钮的页面
+        for page in SettingsPage.allCases {
+            settingsController.present(page: page)
+            try? await Task.sleep(for: .milliseconds(1200))
+            capture(settingsController.window, "页面-设置-\(page.title)")
+        }
+        settingsController.close()
+        onboardingController.present()
+        for page in OnboardingModel.Page.allCases {
+            try? await Task.sleep(for: .milliseconds(1200))
+            capture(onboardingController.window, "页面-引导-\(page.rawValue + 1)")
+            if page != OnboardingModel.Page.allCases.last { onboardingController.model.next() }
+        }
+        onboardingController.close()
+        helpController.present()
+        try? await Task.sleep(for: .milliseconds(1000))
+        capture(helpController.window, "页面-帮助")
+        helpController.close()
+        panelController.show()
+        try? await Task.sleep(for: .milliseconds(1200))
+        capture(panelController.window, "页面-面板")
+        panelController.debugEditor.open(.text(NSAttributedString(string: "示例文本"), isRich: false), on: nil) { _ in }
+        try? await Task.sleep(for: .milliseconds(1000))
+        capture(window(named: "EditorPanel"), "页面-编辑器")
+        window(named: "EditorPanel")?.close()
+        panelController.hide()
+        if let first = try? store.clips(limit: 3) { stack?.add(first) }
+        try? await Task.sleep(for: .milliseconds(1200))
+        capture(window(named: "StackPanel"), "页面-Stack")
+        print("GALLERY 完成")
+        exit(0)
+    }
+
     /// 核对外观用（XPASTE_SNAPSHOT_DIR=<目录>）：把 XPaste 自己的面板、暂停提示、筛选浮层和菜单栏图标画成 PNG，
     /// 不截屏，不会拍到别的应用。玻璃的背景透不出来，只看排版、描边和图标。
     private func writeSnapshots(to directory: URL) async {
@@ -536,13 +686,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             #if DEBUG
             if AppPreferences.testProfile != nil { return }
             #endif
-            let alert = NSAlert()
-            alert.messageText = String(localized: "快捷键不可用")
-            alert.informativeText = error.localizedDescription
-            WindowSharing.apply(to: alert.window)
             // 后台应用的模态框不会自己到前台，可能被其他窗口挡住。
             AppActivation.bringToFront()
-            alert.runModal()
+            NSAlert.showMessage(String(localized: "快捷键不可用"), detail: error.localizedDescription)
         }
     }
 

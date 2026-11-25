@@ -81,6 +81,8 @@ struct KeyboardSettingsView: View {
         alert.informativeText = String(localized: "四个快捷键和两种修饰键将恢复为默认设置。")
         alert.addButton(withTitle: String(localized: "取消"))
         alert.addButton(withTitle: String(localized: "重置"))
+        // 回车和 Esc 都是“取消”；重置标红，只能点。
+        alert.buttons[1].hasDestructiveAction = true
         WindowSharing.apply(to: alert.window)
         if alert.runModal(defaultButton: 0, cancelButton: 0) == .alertSecondButtonReturn { error = save(.defaults) }
     }

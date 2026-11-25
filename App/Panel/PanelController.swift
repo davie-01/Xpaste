@@ -1061,12 +1061,8 @@ final class PanelController: NSObject {
     }
 
     private func showTipError(_ message: String) {
-        let alert = NSAlert()
-        alert.messageText = String(localized: "登录时打开")
-        alert.informativeText = message
-        WindowSharing.apply(to: alert.window, preferences: preferences)
         AppActivation.bringToFront()
-        alert.runModal()
+        NSAlert.showMessage(String(localized: "登录时打开"), detail: message, preferences: preferences)
     }
 
     // MARK: 面板高度与紧凑模式
@@ -1537,14 +1533,15 @@ final class PanelController: NSObject {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = String(localized: "删除所选的 \(count) 项？")
-        if !undoable { alert.informativeText = String(localized: "所选内容较多，删除后无法撤销。") }
+        alert.informativeText = undoable ? String(localized: "可以按 ⌘Z 撤销。") : String(localized: "所选内容较多，删除后无法撤销。")
         alert.addButton(withTitle: String(localized: "删除"))
         alert.addButton(withTitle: String(localized: "取消"))
-        alert.buttons.first?.hasDestructiveAction = true
+        // 能撤销时回车直接删除（删除是回车按钮，蓝色）；太多、撤销不了时回车是“取消”，删除标红、只能点。
+        if !undoable { alert.buttons[0].hasDestructiveAction = true }
         WindowSharing.apply(to: alert.window, preferences: preferences)
         // 确认框会抢走 key 窗口，期间不要因为失焦而关掉面板。
         suppressHideOnResign = true
-        let response = alert.runModal(defaultButton: 0, cancelButton: 1)
+        let response = alert.runModal(defaultButton: undoable ? 0 : 1, cancelButton: 1)
         suppressHideOnResign = false
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(collectionView)
@@ -2149,11 +2146,12 @@ final class PanelController: NSObject {
         alert.informativeText = String(localized: "只存在于这个 Pinboard 的条目会一并删除，仍在历史中的条目会保留。此操作无法撤销。")
         alert.addButton(withTitle: String(localized: "删除"))
         alert.addButton(withTitle: String(localized: "取消"))
-        alert.buttons.first?.hasDestructiveAction = true
+        // 撤销不了：回车是“取消”，删除标红、只能点。
+        alert.buttons[0].hasDestructiveAction = true
         WindowSharing.apply(to: alert.window, preferences: preferences)
         // 确认框会抢走 key 窗口，期间不要因为失焦而关掉面板。
         suppressHideOnResign = true
-        let response = alert.runModal(defaultButton: 0, cancelButton: 1)
+        let response = alert.runModal(defaultButton: 1, cancelButton: 1)
         suppressHideOnResign = false
         panel.makeKeyAndOrderFront(nil)
         guard response == .alertFirstButtonReturn else { return }
@@ -3185,6 +3183,8 @@ extension PanelController {
         return board.pasteboardItems ?? []
     }
     var debugEditor: EditorController { editor }
+    /// 图库截图用：弹出删除第一个 Pinboard 的确认框（截图后中止，不会删除）。
+    func debugConfirmDeleteFirstPinboard() { if let board = pinboards.first { confirmDelete(board) } }
     func debugEditSelection() { editSelection() }
     /// 走一遍“拖到第 index 张前面”的落点处理。
     func debugReorder(ids: [Int64], before index: Int) -> Bool {

@@ -114,13 +114,16 @@ public struct RestorableClip: Sendable {
 }
 
 public enum RetentionPeriod: String, Sendable, CaseIterable {
-    case day, week, month, year, forever
+    // 声明顺序就是从短到长的顺序：设置的滑块、“缩短期限要确认”都按它比较。3 个月、半年是 2026-11-25 用户要求加的。
+    case day, week, month, threeMonths, sixMonths, year, forever
 
     public func cutoff(from now: Date, calendar: Calendar = .current) -> Date? {
         switch self {
         case .day: calendar.date(byAdding: .day, value: -1, to: now)
         case .week: calendar.date(byAdding: .day, value: -7, to: now)
         case .month: calendar.date(byAdding: .month, value: -1, to: now)
+        case .threeMonths: calendar.date(byAdding: .month, value: -3, to: now)
+        case .sixMonths: calendar.date(byAdding: .month, value: -6, to: now)
         case .year: calendar.date(byAdding: .year, value: -1, to: now)
         case .forever: nil
         }

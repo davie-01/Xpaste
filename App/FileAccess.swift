@@ -74,3 +74,26 @@ enum FileAccess {
         }
     }
 }
+
+/// 完全磁盘访问是否已授予。系统没有查询接口，做法是打开几个只有授予了完全磁盘访问才能打开的文件夹：
+/// 能打开就是已授权，返回“没有权限”（EPERM）就是未授权，不存在就试下一个。只打开、立刻关闭，不读内容。
+/// 实测（2026-11-25）：没授权的应用打开这几个都是 EPERM，已授权的都能打开；不会弹授权提示。
+/// 不用系统隐私数据库（TCC.db）：新系统里它不在原来的位置，打开返回“不存在”，会永远判成未授权。
+/// 也不用别的应用的数据目录（~/Library/Containers/…）：访问它可能弹“访问其他应用的数据”的提示。
+/// 要以应用本身启动结果才准；从终端直接运行可执行文件时，系统按终端的授权算。
+enum FullDiskAccess {
+    static let probes = ["Library/Safari", "Library/Mail", "Library/Messages"]
+
+    static var isGranted: Bool {
+        let home = NSHomeDirectory()
+        for path in probes {
+            let descriptor = open(home + "/" + path, O_RDONLY)
+            if descriptor >= 0 {
+                close(descriptor)
+                return true
+            }
+            if errno == EPERM || errno == EACCES { return false }
+        }
+        return false
+    }
+}

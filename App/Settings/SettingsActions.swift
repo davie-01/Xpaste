@@ -5,15 +5,16 @@ import PasteCore
 /// 设置窗口与引导共用的操作：确认框、登录项、保留期限、快捷键保存。
 @MainActor
 enum SettingsActions {
-    static func confirm(title: String, detail: String, preferences: AppPreferences = .shared) -> Bool {
+    /// 不可撤销操作的确认：回车和 Esc 都是“取消”，操作按钮写具体动作（“删除”“缩短”，不写“继续”）、标红，只能点。
+    static func confirm(title: String, detail: String, action: String, preferences: AppPreferences = .shared) -> Bool {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = detail
         alert.addButton(withTitle: String(localized: "取消"))
-        alert.addButton(withTitle: String(localized: "继续"))
+        alert.addButton(withTitle: action)
+        alert.buttons[1].hasDestructiveAction = true
         WindowSharing.apply(to: alert.window, preferences: preferences)
-        // 删除历史、缩短期限这类不可撤销的操作，回车默认是“取消”。
         return alert.runModal(defaultButton: 0, cancelButton: 0) == .alertSecondButtonReturn
     }
 
@@ -33,7 +34,8 @@ enum SettingsActions {
         guard period != old else { return true }
         let all = RetentionPeriod.allCases
         if all.firstIndex(of: period)! < all.firstIndex(of: old)!,
-           !confirm(title: String(localized: "缩短历史保留期限？"), detail: String(localized: "超过新保留期限的历史将被清理。已固定的项目会保留，清理无法撤销。"), preferences: preferences) {
+           !confirm(title: String(localized: "缩短历史保留期限？"), detail: String(localized: "超过新保留期限的历史将被清理。已固定的项目会保留，清理无法撤销。"),
+                    action: String(localized: "缩短"), preferences: preferences) {
             return false
         }
         try apply(period)
@@ -59,6 +61,8 @@ extension RetentionPeriod {
         case .day: String(localized: "1 天")
         case .week: String(localized: "1 周")
         case .month: String(localized: "1 个月")
+        case .threeMonths: String(localized: "3 个月")
+        case .sixMonths: String(localized: "半年")
         case .year: String(localized: "1 年")
         case .forever: String(localized: "永久")
         }

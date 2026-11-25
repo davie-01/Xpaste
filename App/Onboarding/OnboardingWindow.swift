@@ -228,6 +228,7 @@ private struct QuickStartPage: View {
 
 private struct PermissionsPage: View {
     @Binding var trusted: Bool
+    @State private var fullDiskAccess = FullDiskAccess.isGranted
 
     var body: some View {
         VStack(spacing: 20) {
@@ -245,7 +246,12 @@ private struct PermissionsPage: View {
                 Text("可选：完全磁盘访问").fontWeight(.semibold)
                 Text("粘贴“文稿”“桌面”“下载”等文件夹里的文件时，系统会逐个文件夹询问。授予完全磁盘访问后不再询问。XPaste 只读取你复制过的文件，不会扫描磁盘。")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Button(String(localized: "打开完全磁盘访问设置")) { Self.openSettings("Privacy_AllFiles") }.buttonStyle(OnboardingButtonStyle())
+                // 已授予时和上面的“已允许直接粘贴”一样显示绿色说明，不再给按钮（用户真机，2026-11-25）。
+                if fullDiskAccess {
+                    Label(String(localized: "已允许完全磁盘访问"), systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                } else {
+                    Button(String(localized: "打开完全磁盘访问设置")) { Self.openSettings("Privacy_AllFiles") }.buttonStyle(OnboardingButtonStyle())
+                }
             }.padding(12).frame(maxWidth: 420, alignment: .leading)
                 .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
         }.padding(.horizontal, 40)
@@ -253,6 +259,7 @@ private struct PermissionsPage: View {
             .task {
                 while !Task.isCancelled {
                     trusted = DirectPastePermission.isTrusted
+                    fullDiskAccess = FullDiskAccess.isGranted
                     try? await Task.sleep(for: .seconds(1))
                 }
             }

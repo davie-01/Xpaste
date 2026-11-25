@@ -55,6 +55,8 @@ final class SettingsWindowController: NSWindowController {
 final class TrustStatus {
     static let shared = TrustStatus()
     private(set) var isTrusted = DirectPastePermission.isTrusted
+    /// 完全磁盘访问（设置的“权限”页）。
+    private(set) var hasFullDiskAccess = FullDiskAccess.isGranted
     @ObservationIgnored private var timer: Timer?
 
     func startWatching() {
@@ -74,6 +76,8 @@ final class TrustStatus {
     func refresh() {
         let value = DirectPastePermission.isTrusted
         if value != isTrusted { isTrusted = value }
+        let disk = FullDiskAccess.isGranted
+        if disk != hasFullDiskAccess { hasFullDiskAccess = disk }
     }
 }
 
@@ -108,7 +112,7 @@ final class SettingsNavigation {
 }
 
 enum SettingsPage: Int, CaseIterable, Identifiable {
-    case general, privacy, keyboard, mcp, about
+    case general, privacy, permissions, keyboard, mcp, about
     var id: Self { self }
     var title: String {
         switch self {
@@ -116,6 +120,7 @@ enum SettingsPage: Int, CaseIterable, Identifiable {
         case .privacy: String(localized: "隐私")
         case .keyboard: String(localized: "键盘快捷键")
         case .mcp: String(localized: "MCP 与 AI 工具")
+        case .permissions: String(localized: "权限")
         case .about: String(localized: "关于")
         }
     }
@@ -123,6 +128,7 @@ enum SettingsPage: Int, CaseIterable, Identifiable {
         switch self {
         case .general: "gearshape"
         case .privacy: "hand.raised"
+        case .permissions: "lock.shield"
         case .keyboard: "keyboard"
         case .mcp: "point.3.connected.trianglepath.dotted"
         case .about: "info.circle"
@@ -163,7 +169,8 @@ private struct SettingsView: View {
                                 .foregroundStyle(page == item ? Color.white : appearsActive ? Color.accentColor : Color.secondary)
                                 .accessibilityHidden(true)
                             Text(item.title).fontWeight(page == item ? .semibold : .regular)
-                            if item == .general, !trusted {
+                            // 还没允许直接粘贴：“权限”一行后面挂红色感叹号（原来挂在“通用”上，有了权限页后挪过来）。
+                            if item == .permissions, !trusted {
                                 Spacer(minLength: 0)
                                 Image(systemName: "exclamationmark.circle.fill").symbolRenderingMode(.palette)
                                     .foregroundStyle(.white, .red).font(.system(size: 16))
@@ -206,6 +213,10 @@ private struct SettingsView: View {
                     ScrollView {
                         MCPSettingsView(model: mcp).padding(.bottom, 2)
                     }.scrollBounceBehavior(.basedOnSize)
+                } else if page == .permissions {
+                    ScrollView {
+                        PermissionsSettingsView().padding(.bottom, 2)
+                    }.scrollBounceBehavior(.basedOnSize)
                 } else if page == .about {
                     AboutSettingsView()
                 } else {
@@ -243,7 +254,7 @@ private struct GeneralSettingsView: View {
         _wheel = State(initialValue: preferences.wheelScrollsCards)
         _direct = State(initialValue: preferences.pasteToApplication)
         _plain = State(initialValue: preferences.alwaysPastePlainText)
-        _retention = State(initialValue: Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention) ?? 2))
+        _retention = State(initialValue: Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention) ?? RetentionPeriod.allCases.firstIndex(of: .month)!))
     }
 
     var body: some View {
@@ -286,7 +297,7 @@ private struct GeneralSettingsView: View {
             }.padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
             Text("保留历史").fontWeight(.semibold).padding(.leading, 10)
             VStack(spacing: 10) {
-                Slider(value: $retention, in: 0...4, step: 1) {
+                Slider(value: $retention, in: 0...Double(RetentionPeriod.allCases.count - 1), step: 1) {
                     Text("保留历史")
                 } onEditingChanged: { editing in
                     editingRetention = editing
@@ -303,7 +314,8 @@ private struct GeneralSettingsView: View {
                 HStack {
                     Spacer()
                     Button("删除历史…", role: .destructive) {
-                        guard SettingsActions.confirm(title: String(localized: "删除所有历史记录？"), detail: String(localized: "未固定的历史项目将永久删除。已固定的项目和 Pinboard 会保留，此操作无法撤销。"), preferences: preferences) else { return }
+                        guard SettingsActions.confirm(title: String(localized: "删除所有历史记录？"), detail: String(localized: "未固定的历史项目将永久删除。已固定的项目和 Pinboard 会保留，此操作无法撤销。"),
+                                                      action: String(localized: "删除"), preferences: preferences) else { return }
                         do { try onEraseHistory() } catch { self.error = error.localizedDescription }
                     }
                 }
@@ -312,9 +324,14 @@ private struct GeneralSettingsView: View {
         }
         .onAppear(perform: refresh)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in refresh() }
-        .alert(String(localized: "无法更改设置"), isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-            Button("好") { error = nil }
-        } message: { Text(error ?? "") }
+        // 和其他提示框统一用系统确认框（方案 B）：出错时弹出，点“好”后清掉。
+        .onChange(of: error) { _, message in
+            guard let message else { return }
+            DispatchQueue.main.async {
+                NSAlert.showMessage(String(localized: "无法更改设置"), detail: message, preferences: preferences)
+                error = nil
+            }
+        }
     }
 
     private func switchRow(_ title: String, detail: String? = nil, isOn: Binding<Bool>) -> some View {
@@ -335,7 +352,7 @@ private struct GeneralSettingsView: View {
         wheel = preferences.wheelScrollsCards
         direct = preferences.pasteToApplication
         plain = preferences.alwaysPastePlainText
-        retention = Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention) ?? 2)
+        retention = Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention) ?? RetentionPeriod.allCases.firstIndex(of: .month)!)
     }
 
     private func pasteOption(_ value: Bool, title: String, detail: String) -> some View {

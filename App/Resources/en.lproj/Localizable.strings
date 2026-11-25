@@ -361,3 +361,14 @@
 "用鼠标滚轮滚动卡片" = "Scroll Cards with Mouse Wheel";
 "滚轮上下滚动就能左右翻看卡片，不用按住 ⇧。触控板不受影响。" = "Scroll the wheel up or down to move through the cards without holding ⇧. Trackpads are not affected.";
 "鼠标滚轮按住 ⇧ 左右滚动卡片；在“设置 › 通用”里打开“用鼠标滚轮滚动卡片”后不用按 ⇧。" = "Hold ⇧ while turning the mouse wheel to scroll the cards sideways, or turn on “Scroll Cards with Mouse Wheel” in Settings › General to scroll without ⇧.";
+"3 个月" = "3 Months";
+"半年" = "6 Months";
+"已允许完全磁盘访问" = "Full Disk Access allowed";
+"缩短" = "Shorten";
+"可以按 ⌘Z 撤销。" = "You can undo with ⌘Z.";
+"权限" = "Permissions";
+"设备控制和数据访问" = "Device Control and Data Access";
+"允许后，选中的内容会直接粘贴到正在使用的应用。不允许也能使用：内容会放进剪贴板，由你按 ⌘V 粘贴。" = "When allowed, the item you choose is pasted straight into the app you are using. XPaste also works without it: the item goes to the clipboard and you paste it with ⌘V.";
+"完全磁盘访问（可选）" = "Full Disk Access (Optional)";
+"已允许" = "Allowed";
+"未允许" = "Not Allowed";
