@@ -314,9 +314,12 @@ private struct GeneralSettingsView: View {
                 HStack {
                     Spacer()
                     Button("删除历史…", role: .destructive) {
-                        guard SettingsActions.confirm(title: String(localized: "删除所有历史记录？"), detail: String(localized: "未固定的历史项目将永久删除。已固定的项目和 Pinboard 会保留，此操作无法撤销。"),
-                                                      action: String(localized: "删除"), preferences: preferences) else { return }
-                        do { try onEraseHistory() } catch { self.error = error.localizedDescription }
+                        // 确认框等这次点击处理结束后再弹（见 `SettingsActions.afterCurrentEvent`）。
+                        SettingsActions.afterCurrentEvent {
+                            guard SettingsActions.confirm(title: String(localized: "删除所有历史记录？"), detail: String(localized: "未固定的历史项目将永久删除。已固定的项目和 Pinboard 会保留，此操作无法撤销。"),
+                                                          action: String(localized: "删除"), preferences: preferences) else { return }
+                            do { try onEraseHistory() } catch { self.error = error.localizedDescription }
+                        }
                     }
                 }
             }.padding(10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
@@ -375,13 +378,16 @@ private struct GeneralSettingsView: View {
     private var retentionLabel: String { RetentionPeriod.allCases[Int(retention)].title }
 
     private func setRetention(_ value: Double) {
-        let oldIndex = Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention)!)
-        do {
-            let changed = try SettingsActions.changeRetention(to: RetentionPeriod.allCases[Int(value)], preferences: preferences, apply: onRetention)
-            retention = changed ? value : oldIndex
-        } catch {
-            retention = oldIndex
-            self.error = error.localizedDescription
+        // 缩短期限会弹确认框，等这次拖动处理结束后再弹（见 `SettingsActions.afterCurrentEvent`）。
+        SettingsActions.afterCurrentEvent {
+            let oldIndex = Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention)!)
+            do {
+                let changed = try SettingsActions.changeRetention(to: RetentionPeriod.allCases[Int(value)], preferences: preferences, apply: onRetention)
+                retention = changed ? value : oldIndex
+            } catch {
+                retention = oldIndex
+                self.error = error.localizedDescription
+            }
         }
     }
 

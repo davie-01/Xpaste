@@ -5,6 +5,13 @@ import PasteCore
 /// 设置窗口与引导共用的操作：确认框、登录项、保留期限、快捷键保存。
 @MainActor
 enum SettingsActions {
+    /// 从 SwiftUI 控件（按钮、滑块、选择器）里弹确认框时，先让这次事件处理结束再弹。
+    /// 在 SwiftUI 的处理里直接阻塞弹出系统确认框，确认框里标红的按钮画不出来，要鼠标碰一下才出现
+    /// （用户真机 2026-11-25：“删除历史…”的“删除”按钮看不到；同一个确认框从后台任务弹出时正常）。
+    static func afterCurrentEvent(_ work: @escaping @MainActor () -> Void) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { work() } }
+    }
+
     /// 不可撤销操作的确认：回车和 Esc 都是“取消”，操作按钮写具体动作（“删除”“缩短”，不写“继续”）、标红，只能点。
     static func confirm(title: String, detail: String, action: String, preferences: AppPreferences = .shared) -> Bool {
         let alert = NSAlert()

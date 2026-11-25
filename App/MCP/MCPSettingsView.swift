@@ -164,6 +164,11 @@ struct MCPSettingsView: View {
     }
 
     private func disconnect(_ client: MCPClient) {
+        SettingsActions.afterCurrentEvent { confirmDisconnect(client) }
+    }
+
+    /// 等点击处理结束后再弹（见 `SettingsActions.afterCurrentEvent`）。
+    private func confirmDisconnect(_ client: MCPClient) {
         let alert = NSAlert()
         alert.messageText = String(localized: "要断开“\(client.name)”的连接吗？")
         alert.informativeText = String(localized: "断开后，\(client.name) 要重新连接才能使用 XPaste。")
@@ -349,6 +354,11 @@ private struct AdvancedView: View {
     }
 
     private func change() {
+        SettingsActions.afterCurrentEvent { applyPortChange() }
+    }
+
+    /// 等点击处理结束后再弹确认框（见 `SettingsActions.afterCurrentEvent`）。
+    private func applyPortChange() {
         guard let port = newPort else { return }
         if !model.clients.isEmpty {
             let alert = NSAlert()

@@ -215,9 +215,12 @@ private struct QuickStartPage: View {
     }
 
     private func setRetention(_ period: RetentionPeriod) {
-        do {
-            if try SettingsActions.changeRetention(to: period, preferences: preferences, apply: onRetention) { retention = period; message = nil }
-        } catch { message = error.localizedDescription }
+        // 缩短期限会弹确认框，等这次选择处理结束后再弹（见 `SettingsActions.afterCurrentEvent`）。
+        SettingsActions.afterCurrentEvent {
+            do {
+                if try SettingsActions.changeRetention(to: period, preferences: preferences, apply: onRetention) { retention = period; message = nil }
+            } catch { message = error.localizedDescription }
+        }
     }
 
     private func setLogin(_ enabled: Bool) {

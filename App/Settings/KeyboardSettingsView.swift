@@ -76,6 +76,11 @@ struct KeyboardSettingsView: View {
         return message
     }
     private func reset() {
+        SettingsActions.afterCurrentEvent { confirmReset() }
+    }
+
+    /// 等点击处理结束后再弹（见 `SettingsActions.afterCurrentEvent`）。
+    private func confirmReset() {
         let alert = NSAlert()
         alert.messageText = String(localized: "恢复所有默认快捷键？")
         alert.informativeText = String(localized: "四个快捷键和两种修饰键将恢复为默认设置。")
