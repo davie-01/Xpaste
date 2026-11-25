@@ -761,7 +761,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 发 ⌘V 前最后一刻复核：前台还是目标、剪贴板还是这次写的内容（期间没有新复制）、没有更新的回放请求。
             // 任何一项不成立都不发，内容留在剪贴板里，提示已复制，由用户自己粘贴。
             let pid = target.processIdentifier
-            let posted = await PastePerformer.postPasteWhenModifiersReleased {
+            let posted = PastePerformer.postPaste {
                 request == self.pasteRequest && pasteboard.changeCount == changeCount
                     && NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
             }
@@ -769,8 +769,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 SoundEffects.shared.play(.paste)
                 if skippedFiles > 0 { StatusHUD.shared.showSkippedFiles(skippedFiles, pasted: true) }
             } else if request == pasteRequest {
+                // 只记哪项复核没通过，不记内容。
+                let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                Log.paste.notice("没有自动粘贴，只留在剪贴板：前台是目标 \(front == pid, privacy: .public)，剪贴板未变 \(pasteboard.changeCount == changeCount, privacy: .public)，已授权 \(PastePerformer.isTrusted, privacy: .public)")
                 SoundEffects.shared.play(.copy)
                 showCopied(skippedFiles: skippedFiles)
+            } else {
+                Log.paste.notice("没有自动粘贴：被更新的粘贴请求取代")
             }
         }
     }

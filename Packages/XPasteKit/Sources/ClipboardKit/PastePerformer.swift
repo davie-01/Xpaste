@@ -15,25 +15,20 @@ public enum PastePerformer {
         _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
 
-    /// 等触发热键的修饰键松开后再发事件，否则目标应用会收到叠加了多余修饰键的组合。
-    /// 到期修饰键仍按着就不发（会变成别的快捷键）；发之前紧接着调用 `stillValid` 复核目标、剪贴板和请求（审查 01），不成立也不发。
-    /// 返回是否发出了 ⌘V。
-    public static func postPasteWhenModifiersReleased(timeout: Duration = .milliseconds(500),
-                                                      stillValid: () -> Bool = { true }) async -> Bool {
-        guard isTrusted else { return false }
-        let held: CGEventFlags = [.maskCommand, .maskShift, .maskControl, .maskAlternate]
-        let deadline = ContinuousClock.now + timeout
-        while !CGEventSource.flagsState(.combinedSessionState).isDisjoint(with: held) {
-            guard ContinuousClock.now < deadline else { return false }
-            do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
-        }
+    /// 先调用 `stillValid` 复核目标、剪贴板和请求（审查 01），成立就立刻发 ⌘V，不成立不发。返回是否发出了。
+    /// 不等触发热键的修饰键松开：用户按住 ⇧ 回车、⌘ 加数字、⌃⌥⌘V 时手指可能还没离开，照样立刻粘贴（用户要求，2026-11-25）。
+    /// 以前等松开、超过 0.5 秒就放弃，⇧回车 慢一点松手就只剩“已复制”。见 `postPaste` 为什么不会变成 ⇧⌘V。
+    public static func postPaste(stillValid: () -> Bool) -> Bool {
         guard isTrusted, stillValid() else { return false }
         return postPaste()
     }
 
+    /// 发一次 ⌘V。用私有事件源生成、修饰键字段明确只有 ⌘：用户此刻按着的 ⇧、⌥、⌃ 不会叠加进去，
+    /// 应用按事件里的修饰键匹配菜单快捷键，收到的就是 ⌘V（实测：模拟按住 ⇧ 时发出，前台应用触发的是 ⌘V 菜单项，
+    /// 事件和应用查到的当前修饰键里都没有 ⇧）。
     @discardableResult
     public static func postPaste() -> Bool {
-        guard isTrusted, let source = CGEventSource(stateID: .combinedSessionState) else { return false }
+        guard isTrusted, let source = CGEventSource(stateID: .privateState) else { return false }
         let keyV = keyCodeForCommandV()
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyV, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: keyV, keyDown: false)

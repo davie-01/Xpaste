@@ -267,13 +267,11 @@ final class StackController: NSObject {
     }
 
     /// 向前台应用发 ⌘V。Stack 窗口不会成为前台，点它之后前台还是用户原来的应用。
-    /// 等触发的修饰键（⌃⌥⌘V）松开再发；没有授权时只留在剪贴板里。
+    /// 触发的修饰键（⌃⌥⌘V）不用松开，立刻发，不会叠加成别的组合（见 `PastePerformer.postPaste`）；没有授权时只留在剪贴板里。
     private func sendPaste(changeCount: Int) {
         guard interceptsPaste, PastePerformer.isTrusted else { return }
         let pasteboard = pasteboard
-        Task {
-            _ = await PastePerformer.postPasteWhenModifiersReleased(timeout: .seconds(2)) { pasteboard.changeCount == changeCount }
-        }
+        _ = PastePerformer.postPaste { pasteboard.changeCount == changeCount }
     }
 
     /// 插队粘贴、全部粘贴之后：粘空了就关掉（和 ⌘V 粘完最后一项一样），否则刷新。

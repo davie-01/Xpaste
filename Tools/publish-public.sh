@@ -21,6 +21,7 @@ PRIVATE_PATHS=(
   Tools/click.swift
   Tools/stackprobe.sh
   Tools/stackprobe.swift
+  Tools/private
 )
 
 INDEX=$(mktemp -t xpaste-public-index)
