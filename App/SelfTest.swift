@@ -866,10 +866,26 @@ enum SelfTest {
                   panel.debugSelectedIndex == 22 && abs((panel.debugCardOffset(index: 22) ?? 0) - midOffset) < 1 && panel.debugCardsMatchData,
                   "选中 \(String(describing: panel.debugSelectedIndex)) 位置 \(String(describing: panel.debugCardOffset(index: 22))) 原 \(midOffset)")
             // 鼠标滚轮：开关打开时上下滚动换成左右滚动，和按住 ⇧ 一样；关着时不动；带手势阶段的（触控板、妙控鼠标）原样不动。
-            func wheel(_ lines: Int32, phase: Int64 = 0, units: CGScrollEventUnit = .line) -> NSEvent? {
+            func wheel(_ lines: Int32, phase: Int64 = 0, momentum: Int64 = 0, units: CGScrollEventUnit = .line, sourcePID: Int64 = 0) -> NSEvent? {
                 guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: units, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0) else { return nil }
                 if phase != 0 { cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase) }
+                if momentum != 0 { cg.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum) }
+                cg.setIntegerValueField(.eventSourceUnixProcessID, value: sourcePID)
                 return NSEvent(cgEvent: cg)
+            }
+            // 平滑滚动工具（Mac Mouse Fix 等）把滚轮转成带手势阶段和惯性的事件，来源是它的进程（用户真机实测）：也要换轴。
+            // CG 的阶段编号和 NSEvent 不同：手势“进行中”是 2（NSEvent 里是 4），惯性“继续”是 2。
+            if let smooth = wheel(-24, phase: 2, units: .pixel, sourcePID: 920), let smoothMomentum = wheel(-12, momentum: 2, units: .pixel, sourcePID: 920),
+               let pad = wheel(-24, phase: 2, units: .pixel), let padMomentum = wheel(-12, momentum: 2, units: .pixel) {
+                let swapped = BarelessScrollView.horizontalWheelEvent(from: smooth)
+                let swappedMomentum = BarelessScrollView.horizontalWheelEvent(from: smoothMomentum)
+                check("平滑滚动工具发来的带手势阶段的滚轮也换轴，阶段保留；触控板的原样不动",
+                      swapped?.scrollingDeltaX == -24 && swapped?.scrollingDeltaY == 0 && swapped?.phase == .changed
+                          && swappedMomentum?.scrollingDeltaX == -12 && swappedMomentum?.momentumPhase == .changed
+                          && BarelessScrollView.horizontalWheelEvent(from: pad) == nil && BarelessScrollView.horizontalWheelEvent(from: padMomentum) == nil,
+                      "工具 \(String(describing: swapped?.scrollingDeltaX)) 阶段 \(String(describing: swapped?.phase.rawValue)) 惯性 \(String(describing: swappedMomentum?.scrollingDeltaX)) 来源 \(smooth.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? -1)")
+            } else {
+                check("能合成带手势阶段的滚轮事件", false)
             }
             if let down = wheel(-3), let trackpad = wheel(-3, phase: 1) {
                 let converted = BarelessScrollView.horizontalWheelEvent(from: down)
@@ -898,6 +914,29 @@ enum SelfTest {
                 panel.debugScrollView.scrollWheel(with: down)
                 for _ in 0..<100 where abs(panel.debugScrollX - start) < 0.5 { try? await Task.sleep(for: .milliseconds(10)) }
                 let whenOn = panel.debugScrollX
+                // 一整段平滑滚动（开始 → 进行中 ×8 → 结束 → 惯性 ×6），模拟 Mac Mouse Fix 发来的：卡片要实际滚动；
+                // 同样一段、来源进程为 0（触控板的竖向滑动）：卡片不动。
+                func gesture(sourcePID: Int64) -> [NSEvent] {
+                    var events: [NSEvent?] = [wheel(-1, phase: 1, units: .pixel, sourcePID: sourcePID)]
+                    events += (0..<8).map { _ in wheel(-20, phase: 2, units: .pixel, sourcePID: sourcePID) }
+                    events += [wheel(0, phase: 4, units: .pixel, sourcePID: sourcePID), wheel(-10, momentum: 1, units: .pixel, sourcePID: sourcePID)]
+                    events += (0..<5).map { _ in wheel(-8, momentum: 2, units: .pixel, sourcePID: sourcePID) }
+                    events.append(wheel(0, momentum: 3, units: .pixel, sourcePID: sourcePID))
+                    return events.compactMap { $0 }
+                }
+                panel.debugScroll(toCard: 10, offset: leading)
+                try? await Task.sleep(for: .milliseconds(300))
+                let gestureStart = panel.debugScrollX
+                for event in gesture(sourcePID: 0) { panel.debugScrollView.scrollWheel(with: event) }
+                try? await Task.sleep(for: .milliseconds(400))
+                let padGesture = panel.debugScrollX
+                for event in gesture(sourcePID: 920) { panel.debugScrollView.scrollWheel(with: event) }
+                for _ in 0..<100 where abs(panel.debugScrollX - gestureStart) < 0.5 { try? await Task.sleep(for: .milliseconds(10)) }
+                try? await Task.sleep(for: .milliseconds(400))
+                let toolGesture = panel.debugScrollX
+                check("平滑滚动工具的一整段滚动（含惯性）实际滚动卡片，方向和普通滚轮一样；触控板的竖向滑动不动",
+                      abs(padGesture - gestureStart) < 0.5 && toolGesture > gestureStart + 100,
+                      "起点 \(gestureStart) 触控板 \(padGesture) 工具 \(toolGesture)")
                 preferences.wheelScrollsCards = wheelSetting
                 check("开关关着时滚轮上下不动卡片；打开后滚轮能左右滚动，触控板的竖向滑动仍不动",
                       abs(whenOff - start) < 0.5 && abs(trackpadOn - start) < 0.5 && whenOn > start + 0.5,

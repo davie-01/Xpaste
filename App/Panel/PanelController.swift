@@ -49,18 +49,46 @@ final class BarelessScrollView: NSScrollView {
     var convertsVerticalWheel: () -> Bool = { false }
 
     override func scrollWheel(with event: NSEvent) {
-        if convertsVerticalWheel(), let horizontal = Self.horizontalWheelEvent(from: event) {
-            super.scrollWheel(with: horizontal)
-        } else {
+        guard convertsVerticalWheel(), let horizontal = Self.horizontalWheelEvent(from: event) else {
             super.scrollWheel(with: event)
+            return
+        }
+        if event.hasPreciseScrollingDeltas {
+            // 按像素计的（平滑滚动工具发来的带手势阶段的事件、高精度滚轮）：换轴后交给系统不会滚动，
+            // 滚动视图的手势跟踪认不出这种事件（自检实测：一整段平滑滚动交给系统后视口不动）。
+            // 这些位移已经由发送方做过平滑和惯性，直接按像素移动视口。方向与按行计的滚轮换轴后一致。
+            scrollHorizontally(by: -horizontal.scrollingDeltaX)
+        } else {
+            // 按行计的普通滚轮：交给系统，速度和方向与按住 ⇧ 滚动一样。
+            super.scrollWheel(with: horizontal)
         }
     }
 
+    private func scrollHorizontally(by delta: CGFloat) {
+        guard let documentView, delta != 0 else { return }
+        let clip = contentView
+        let maxX = max(0, documentView.frame.width - clip.bounds.width)
+        let x = min(max(clip.bounds.origin.x + delta, 0), maxX)
+        guard x != clip.bounds.origin.x else { return }
+        clip.scroll(to: NSPoint(x: x, y: clip.bounds.origin.y))
+        reflectScrolledClipView(clip)
+    }
+
+    /// 是不是鼠标滚轮发出的滚动（不是触控板、妙控鼠标）。
+    /// - 没有手势阶段（phase、momentumPhase 都为空）：硬件滚轮。
+    /// - 有手势阶段、但事件是别的程序发出来的（来源进程号不为 0）：Mac Mouse Fix、Mos 这类平滑滚动工具把滚轮
+    ///   转成了触控板那样带手势阶段和惯性的事件（用户真机实测：经 Mac Mouse Fix 的滚轮事件全带手势阶段，来源是它的进程）。
+    /// - 有手势阶段、来源进程号为 0：触控板或妙控鼠标的硬件事件，本来就能左右滑，不当作滚轮。
+    ///   触控板左右滑的过程中夹着不少单个“纯纵向”事件，逐个换轴会抖，所以必须排除。
+    static func isMouseWheel(_ event: NSEvent) -> Bool {
+        if event.phase.isEmpty, event.momentumPhase.isEmpty { return true }
+        return (event.cgEvent?.getIntegerValueField(.eventSourceUnixProcessID) ?? 0) != 0
+    }
+
     /// 把鼠标滚轮的上下滚动换成左右滚动：两个轴对调后交给系统照常处理，速度和方向与按住 ⇧ 滚动一样。
-    /// 只换鼠标滚轮：触控板和妙控鼠标的滚动带手势阶段（phase / momentumPhase），本来就能左右滑，原样不动；
-    /// 已经带横向分量的（倾斜滚轮、按着 ⇧）也不动。
+    /// 只换鼠标滚轮（见 `isMouseWheel`），已经带横向分量的（倾斜滚轮、按着 ⇧）也不动。
     static func horizontalWheelEvent(from event: NSEvent) -> NSEvent? {
-        guard event.type == .scrollWheel, event.phase.isEmpty, event.momentumPhase.isEmpty, !event.modifierFlags.contains(.shift),
+        guard event.type == .scrollWheel, isMouseWheel(event), !event.modifierFlags.contains(.shift),
               event.scrollingDeltaX == 0, event.scrollingDeltaY != 0, let cg = event.cgEvent?.copy() else { return nil }
         // 先把纵轴的三组值都读出来，再按 整数 → 定点数 → 像素 的顺序写。写定点数会重算像素位移，
         // 像素放在前面写会被冲掉：高精度滚轮（按像素计、没有手势阶段）换轴后横向位移变成 0。
