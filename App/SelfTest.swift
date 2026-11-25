@@ -103,7 +103,7 @@ enum SelfTest {
             defer { defaults.removePersistentDomain(forName: suite) }
             let preferences = AppPreferences(defaults: defaults)
             check("通用设置默认值", preferences.soundEffectsEnabled && preferences.pasteToApplication
-                  && !preferences.alwaysPastePlainText && preferences.retention == .month)
+                  && !preferences.alwaysPastePlainText && preferences.retention == .month && !preferences.wheelScrollsCards)
             check("MCP 默认关闭、默认端口 39725", !preferences.mcpEnabled && preferences.mcpPort == 39725)
             defaults.set("week", forKey: "historyRetention")
             defaults.set(false, forKey: "soundEffectsEnabled")
@@ -865,6 +865,46 @@ enum SelfTest {
             check("选中的一段从眼前某张开始时，后面那张停在这张原来的位置",
                   panel.debugSelectedIndex == 22 && abs((panel.debugCardOffset(index: 22) ?? 0) - midOffset) < 1 && panel.debugCardsMatchData,
                   "选中 \(String(describing: panel.debugSelectedIndex)) 位置 \(String(describing: panel.debugCardOffset(index: 22))) 原 \(midOffset)")
+            // 鼠标滚轮：开关打开时上下滚动换成左右滚动，和按住 ⇧ 一样；关着时不动；带手势阶段的（触控板、妙控鼠标）原样不动。
+            func wheel(_ lines: Int32, phase: Int64 = 0, units: CGScrollEventUnit = .line) -> NSEvent? {
+                guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: units, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0) else { return nil }
+                if phase != 0 { cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase) }
+                return NSEvent(cgEvent: cg)
+            }
+            if let down = wheel(-3), let trackpad = wheel(-3, phase: 1) {
+                let converted = BarelessScrollView.horizontalWheelEvent(from: down)
+                check("滚轮的上下滚动换成左右滚动，方向和按住 ⇧ 一样", converted?.scrollingDeltaX == down.scrollingDeltaY && converted?.scrollingDeltaY == 0
+                          && BarelessScrollView.horizontalWheelEvent(from: trackpad) == nil,
+                      "原 \(down.scrollingDeltaY) 换后 \(String(describing: converted?.scrollingDeltaX)) / \(String(describing: converted?.scrollingDeltaY)) 触控板阶段 \(trackpad.phase.rawValue)")
+                // 高精度滚轮：按像素计、没有手势阶段。纵向 24 pt 要换成同方向的横向 24 pt，不能丢成 0（参考方案指出的换轴顺序问题）。
+                if let precise = wheel(-24, units: .pixel) {
+                    let swapped = BarelessScrollView.horizontalWheelEvent(from: precise)
+                    check("高精度滚轮的纵向 24 pt 换成同方向的横向 24 pt", precise.hasPreciseScrollingDeltas && precise.scrollingDeltaY == -24
+                              && swapped?.scrollingDeltaX == -24 && swapped?.scrollingDeltaY == 0 && swapped?.hasPreciseScrollingDeltas == true,
+                          "原 \(precise.scrollingDeltaY) 换后 \(String(describing: swapped?.scrollingDeltaX)) / \(String(describing: swapped?.scrollingDeltaY))")
+                }
+                let wheelSetting = preferences.wheelScrollsCards
+                panel.debugScroll(toCard: 10, offset: leading)
+                let start = panel.debugScrollX
+                // 滚动视图处理滚轮是异步的：不该动的等 0.3 秒再看，该动的最多等 1 秒。
+                preferences.wheelScrollsCards = false
+                panel.debugScrollView.scrollWheel(with: down)
+                try? await Task.sleep(for: .milliseconds(300))
+                let whenOff = panel.debugScrollX
+                preferences.wheelScrollsCards = true
+                panel.debugScrollView.scrollWheel(with: trackpad)
+                try? await Task.sleep(for: .milliseconds(300))
+                let trackpadOn = panel.debugScrollX
+                panel.debugScrollView.scrollWheel(with: down)
+                for _ in 0..<100 where abs(panel.debugScrollX - start) < 0.5 { try? await Task.sleep(for: .milliseconds(10)) }
+                let whenOn = panel.debugScrollX
+                preferences.wheelScrollsCards = wheelSetting
+                check("开关关着时滚轮上下不动卡片；打开后滚轮能左右滚动，触控板的竖向滑动仍不动",
+                      abs(whenOff - start) < 0.5 && abs(trackpadOn - start) < 0.5 && whenOn > start + 0.5,
+                      "起点 \(start) 关 \(whenOff) 触控板 \(trackpadOn) 开 \(whenOn)")
+            } else {
+                check("能合成滚轮事件", false)
+            }
             // 单条删除：视口不动，后面的那张挤到被删的位置。
             panel.debugScroll(toCard: 10, offset: leading)
             let scrollBefore = panel.debugScrollX
@@ -883,10 +923,78 @@ enum SelfTest {
             panel.debugSelect(indexes: 2...4, current: 4)
             panel.debugPress(keyCode: 51)
             await panel.debugSettle()
+            print(String(format: "INFO 删除耗时（毫秒）：带旧卡片重配 应用 %.2f 布局 %.2f", panel.debugLastApplyMs, panel.debugMeasureLayoutMs()))
+            // 删除后滚过去，新进视口的卡片要等下一次布局才生成。上一步刚用代码滚到卡片 30、还没显示过，
+            // 集合视图手里还留着卡片 10 附近的旧卡片，正好验证删除后会把它们按新数据重配。
+            for _ in 0..<150 where !panel.debugCardsMatchData { try? await Task.sleep(for: .milliseconds(10)) }
             let leftOffset = panel.debugCardOffset(index: 2) ?? -1
             check("被删的卡片都不在眼前时，后面那张放到视口左端",
                   panel.debugSelectedIndex == 2 && abs(leftOffset - leading) < 1 && panel.debugCardsMatchData,
-                  "位置 \(leftOffset) 选中 \(String(describing: panel.debugSelectedIndex))")
+                  "位置 \(leftOffset) 选中 \(String(describing: panel.debugSelectedIndex)) \(panel.debugCardMismatches)")
+
+            // 稳定性：删除后不等动画，立刻按 clipID 核对屏幕上的卡片身份，抓动画中短暂露出的旧卡片。
+            // 1) 这次删除让视口往前挪；删完马上滚回删除前的位置，那里现在是原来更后面的卡片。
+            panel.debugScroll(toCard: 25, offset: leading)
+            panel.debugForceLayout()
+            let oldX = panel.debugScrollX
+            let beforeBack = panel.debugVisiblePreviews
+            panel.debugSelect(indexes: 18...26, current: 26)
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            let rightAfter = panel.debugOnScreenIdentityMismatches
+            let rangeTiming = (panel.debugLastApplyMs, panel.debugMeasureLayoutMs())
+            panel.debugScroll(toX: oldX)
+            panel.debugForceLayout()
+            let backNow = panel.debugOnScreenIdentityMismatches, backCount = panel.debugOnScreenItemCount
+            try? await Task.sleep(for: .milliseconds(600))
+            panel.debugForceLayout()
+            let backLater = panel.debugOnScreenIdentityMismatches
+            check("删除后马上滚回删除前的位置：删完那一刻、滚回那一刻、动画结束后，屏幕上每张卡片都是所在序号的那一条",
+                  rightAfter.isEmpty && backNow.isEmpty && backLater.isEmpty && backCount > 0
+                      && panel.debugVisiblePreviews == Array(beforeBack[..<18] + beforeBack[27...]),
+                  "删完 \(rightAfter) 滚回 \(backNow)（\(backCount) 张） 之后 \(backLater)")
+
+            // 2) 连续两次删除，第二次在第一次的动画还没结束时（视口不动，删除带动画）。
+            panel.debugScroll(toCard: 3, offset: leading)
+            panel.debugForceLayout()
+            let twice = panel.debugVisiblePreviews
+            panel.debugSelect(index: 5)
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            let firstNow = panel.debugOnScreenIdentityMismatches
+            let singleTiming = (panel.debugLastApplyMs, panel.debugMeasureLayoutMs())
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            panel.debugForceLayout()
+            let secondNow = panel.debugOnScreenIdentityMismatches
+            try? await Task.sleep(for: .milliseconds(600))
+            panel.debugForceLayout()
+            let twiceLater = panel.debugOnScreenIdentityMismatches
+            check("动画中连续删两次：每次删完那一刻和动画结束后卡片身份都对，选中落到再后面那张",
+                  firstNow.isEmpty && secondNow.isEmpty && twiceLater.isEmpty && panel.debugSelectedIndex == 5
+                      && panel.debugSelectedPreviews == [twice[7]] && panel.debugVisiblePreviews == Array(twice[..<5] + twice[7...]),
+                  "第一次 \(firstNow) 第二次 \(secondNow) 之后 \(twiceLater) 选中 \(panel.debugSelectedPreviews) 应为 \(twice[7])")
+
+            // 3) 连续两次删除，第二次在第一次的查询还没回来时（按键连按）：两次合成一次刷新。
+            let rapid = panel.debugVisiblePreviews
+            panel.debugSelect(index: 5)
+            panel.debugPress(keyCode: 51)
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            panel.debugForceLayout()
+            let rapidNow = panel.debugOnScreenIdentityMismatches
+            let rapidApply = panel.debugLastApplyMs
+            try? await Task.sleep(for: .milliseconds(600))
+            panel.debugForceLayout()
+            let rapidLater = panel.debugOnScreenIdentityMismatches
+            check("连按两次删除（第一次的刷新还没回来）：删掉相邻的两张，卡片身份都对，选中落到再后面那张",
+                  rapidNow.isEmpty && rapidLater.isEmpty && panel.debugSelectedIndex == 5
+                      && panel.debugSelectedPreviews == [rapid[7]] && panel.debugVisiblePreviews == Array(rapid[..<5] + rapid[7...]),
+                  "删完 \(rapidNow) 之后 \(rapidLater) 选中 \(panel.debugSelectedPreviews) 应为 \(rapid[7]) 列表 \(panel.debugVisiblePreviews.prefix(8))")
+            // 删除的主线程耗时（应用结果 + 一次布局和显示），和整表重载对照。
+            let reloadMs = (0..<3).map { _ in panel.debugMeasureReloadDataMs() }
+            print(String(format: "INFO 删除耗时（毫秒）：多选滚动删除 应用 %.2f 布局 %.2f；单条带动画 应用 %.2f 布局 %.2f；连按两次 应用 %.2f；整表重载加布局 %@",
+                         rangeTiming.0, rangeTiming.1, singleTiming.0, singleTiming.1, rapidApply, reloadMs.map { String(format: "%.2f", $0) }.joined(separator: " / ")))
             panel.debugSearch("")
             await panel.debugSettle()
             panel.debugPress(keyCode: 51)

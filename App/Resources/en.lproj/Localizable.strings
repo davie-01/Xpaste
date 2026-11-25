@@ -357,3 +357,7 @@
 "检查更新…" = "Check for Updates…";
 "启动时检查更新" = "Check for updates at launch";
 "只在启动时检查一次，有新版本才提示；关掉后只在点“检查更新…”时联网。" = "Checks once when XPaste starts and only speaks up if there is a new version. When off, XPaste goes online for updates only when you click “Check for Updates…”.";
+
+"用鼠标滚轮滚动卡片" = "Scroll Cards with Mouse Wheel";
+"滚轮上下滚动就能左右翻看卡片，不用按住 ⇧。触控板不受影响。" = "Scroll the wheel up or down to move through the cards without holding ⇧. Trackpads are not affected.";
+"鼠标滚轮按住 ⇧ 左右滚动卡片；在“设置 › 通用”里打开“用鼠标滚轮滚动卡片”后不用按 ⇧。" = "Hold ⇧ while turning the mouse wheel to scroll the cards sideways, or turn on “Scroll Cards with Mouse Wheel” in Settings › General to scroll without ⇧.";

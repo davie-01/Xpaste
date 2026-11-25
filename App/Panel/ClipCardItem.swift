@@ -36,6 +36,8 @@ final class ClipCardItem: NSCollectionViewItem {
     var accessibilityMenu: (() -> NSMenu?)?
     var accessibilityActions: (() -> [NSAccessibilityCustomAction])?
     private var accessibilityName = ""
+    /// 这张卡片现在显示的是哪一条。批量删除后核对卡片有没有跟着挪对位置（见 `PanelController.updateRemovals`）。
+    private(set) var clipID: ClipSummary.ID?
 
     override func loadView() {
         let root = NSView()
@@ -245,6 +247,7 @@ final class ClipCardItem: NSCollectionViewItem {
     }
 
     func configure(with clip: ClipSummary, now: Date, compact: Bool, pinboardColor: NSColor? = nil, inPinboard: Bool = false) {
+        clipID = clip.id
         kind = clip.kind
         isCompact = compact
         kindLabel.stringValue = clip.title ?? Self.typeTitle(for: clip)

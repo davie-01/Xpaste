@@ -44,6 +44,37 @@ class ClipPanel: NSPanel {
 final class BarelessScrollView: NSScrollView {
     override var hasHorizontalScroller: Bool { get { false } set {} }
     override var hasVerticalScroller: Bool { get { false } set {} }
+
+    /// 为 true 时，鼠标滚轮的上下滚动当作左右滚动（设置里的“用鼠标滚轮滚动卡片”）。每次滚动时读，设置改了立即生效。
+    var convertsVerticalWheel: () -> Bool = { false }
+
+    override func scrollWheel(with event: NSEvent) {
+        if convertsVerticalWheel(), let horizontal = Self.horizontalWheelEvent(from: event) {
+            super.scrollWheel(with: horizontal)
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+
+    /// 把鼠标滚轮的上下滚动换成左右滚动：两个轴对调后交给系统照常处理，速度和方向与按住 ⇧ 滚动一样。
+    /// 只换鼠标滚轮：触控板和妙控鼠标的滚动带手势阶段（phase / momentumPhase），本来就能左右滑，原样不动；
+    /// 已经带横向分量的（倾斜滚轮、按着 ⇧）也不动。
+    static func horizontalWheelEvent(from event: NSEvent) -> NSEvent? {
+        guard event.type == .scrollWheel, event.phase.isEmpty, event.momentumPhase.isEmpty, !event.modifierFlags.contains(.shift),
+              event.scrollingDeltaX == 0, event.scrollingDeltaY != 0, let cg = event.cgEvent?.copy() else { return nil }
+        // 先把纵轴的三组值都读出来，再按 整数 → 定点数 → 像素 的顺序写。写定点数会重算像素位移，
+        // 像素放在前面写会被冲掉：高精度滚轮（按像素计、没有手势阶段）换轴后横向位移变成 0。
+        let lines = cg.getIntegerValueField(.scrollWheelEventDeltaAxis1)
+        let fixed = cg.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+        let points = cg.getIntegerValueField(.scrollWheelEventPointDeltaAxis1)
+        cg.setIntegerValueField(.scrollWheelEventDeltaAxis2, value: lines)
+        cg.setIntegerValueField(.scrollWheelEventDeltaAxis1, value: 0)
+        cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: fixed)
+        cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: 0)
+        cg.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: points)
+        cg.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: 0)
+        return NSEvent(cgEvent: cg)
+    }
 }
 
 /// 面板上缘：拖动调整高度，双击恢复默认高度，右键锁定或恢复（面板高度的全部操作都在这里，“…”菜单里另有一份）。
@@ -850,6 +881,7 @@ final class PanelController: NSObject {
 
         scrollView.documentView = collectionView
         scrollView.drawsBackground = false
+        scrollView.convertsVerticalWheel = { [weak self] in self?.preferences.wheelScrollsCards ?? false }
         scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = false
         scrollView.horizontalScrollElasticity = .allowed
@@ -1250,6 +1282,8 @@ final class PanelController: NSObject {
     }
 
     private func apply(_ fetched: [ClipSummary], count: Int, selectFirst: Bool, scroll: Bool) {
+        let applyStarted = CACurrentMediaTime()
+        defer { lastApplyDuration = CACurrentMediaTime() - applyStarted }
         hasMore = fetched.count > count
         let old = visibleClips
         visibleClips = Array(fetched.prefix(count))
@@ -1337,7 +1371,15 @@ final class PanelController: NSObject {
             if !appended.isEmpty { self.collectionView.insertItems(at: appended) }
         }
         if animated { collectionView.animator().performBatchUpdates(updates) } else { collectionView.performBatchUpdates(updates) }
-        if !changed.isEmpty { collectionView.reloadItems(at: Set(changed)) }
+        // 集合视图手里还有不在当前视口里的旧卡片时（滚动后还没显示过一次，卡片没按新视口重铺），批量删除不会挪动它们，
+        // 它们留在原来的序号上、显示删除前那一条，滚回去就露出来（自检复现：卡片 9 仍显示删除前的第 9 条）。
+        // 删除后逐张核对已生成的卡片，和所在序号的数据对不上的按新数据重配。
+        let stale = collectionView.visibleItems().compactMap { item -> IndexPath? in
+            guard let card = item as? ClipCardItem, let path = collectionView.indexPath(for: item), new.indices.contains(path.item) else { return nil }
+            return card.clipID == new[path.item].id ? nil : path
+        }
+        let reconfigure = Set(changed).union(stale)
+        if !reconfigure.isEmpty { collectionView.reloadItems(at: reconfigure) }
         return true
     }
 
@@ -1348,6 +1390,8 @@ final class PanelController: NSObject {
         let offset: CGFloat?
     }
     private var pendingDeleteAnchor: DeleteAnchor?
+    /// 最近一次应用查询结果（含卡片的局部更新或整表重载）在主线程上用的时间，自检量删除是否卡顿用。
+    private var lastApplyDuration: CFTimeInterval = 0
 
     /// 卡片单元（含选中描边的外扩）在视口左端时的左边距。
     private var leadingCellInset: CGFloat { PanelMetrics.cardLeadingInset - PanelMetrics.selectionOutset }
@@ -3146,6 +3190,54 @@ extension PanelController {
             guard let card = collectionView.item(at: path) as? ClipCardItem, visibleClips.indices.contains(path.item) else { return false }
             return card.accessibilityLabel() == ClipCardItem.accessibilityLabel(for: visibleClips[path.item], now: now)
         }
+    }
+    /// 按 clipID 核对卡片身份：屏幕上（和视口有交集）的每张卡片，显示的条目是否就是它所在序号的数据。
+    /// 返回对不上的“序号：卡片 → 应为”，空表示全部对得上。不等动画，调用那一刻是什么就核对什么。
+    var debugOnScreenIdentityMismatches: [String] {
+        let visible = scrollView.contentView.bounds
+        return collectionView.visibleItems().compactMap { item -> String? in
+            guard let card = item as? ClipCardItem, !card.view.isHidden, card.view.alphaValue > 0,
+                  card.view.frame.intersects(visible) else { return nil }
+            guard let path = collectionView.indexPath(for: item) else { return "无序号：\(String(describing: card.clipID))" }
+            guard visibleClips.indices.contains(path.item) else { return "\(path.item)：超出数据" }
+            return card.clipID == visibleClips[path.item].id ? nil
+                : "\(path.item)：\(String(describing: card.clipID)) → \(visibleClips[path.item].id)"
+        }
+    }
+    /// 视口里应该看到的序号都有卡片（滚动后布局过一次再看）。
+    var debugOnScreenItemCount: Int {
+        let visible = scrollView.contentView.bounds
+        return collectionView.visibleItems().filter { $0.view.frame.intersects(visible) }.count
+    }
+    var debugLastApplyMs: Double { lastApplyDuration * 1000 }
+    /// 量一次布局加显示（批量更新、重配卡片的实际排版和绘制都在这里发生）。
+    func debugMeasureLayoutMs() -> Double {
+        let started = CACurrentMediaTime()
+        debugForceLayout()
+        return (CACurrentMediaTime() - started) * 1000
+    }
+    /// 整表重载一次（对照用）：返回重载加布局显示的毫秒数。
+    func debugMeasureReloadDataMs() -> Double {
+        let started = CACurrentMediaTime()
+        collectionView.reloadData()
+        applySelection(scroll: false)
+        debugForceLayout()
+        return (CACurrentMediaTime() - started) * 1000
+    }
+    func debugScroll(toX x: CGFloat) {
+        scrollView.contentView.scroll(to: NSPoint(x: x, y: scrollView.contentView.bounds.minY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+    /// 卡片和数据对不上的地方（诊断用）：集合视图条目数、数据条数，以及对不上的可见卡片“序号：卡片朗读 ≠ 数据”。
+    var debugCardMismatches: String {
+        let now = Date()
+        let rows = collectionView.indexPathsForVisibleItems().sorted().compactMap { path -> String? in
+            guard let card = collectionView.item(at: path) as? ClipCardItem else { return "\(path.item)：无卡片" }
+            guard visibleClips.indices.contains(path.item) else { return "\(path.item)：超出数据" }
+            let label = card.accessibilityLabel() ?? "", expected = ClipCardItem.accessibilityLabel(for: visibleClips[path.item], now: now)
+            return label == expected ? nil : "\(path.item)：\(label.prefix(12)) ≠ \(expected.prefix(12))"
+        }
+        return "条目 \(collectionView.numberOfItems(inSection: 0)) 数据 \(visibleClips.count) " + rows.joined(separator: "；")
     }
     /// 每个落点（第 i 张之前，最后一个是末尾）的竖线位置，以及卡片的位置。
     var debugDropGaps: (gaps: [NSRect], items: [NSRect]) {

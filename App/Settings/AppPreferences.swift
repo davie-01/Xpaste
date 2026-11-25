@@ -61,6 +61,11 @@ struct AppPreferences: @unchecked Sendable {
         get { defaults.object(forKey: "checksForUpdatesAtLaunch") as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: "checksForUpdatesAtLaunch") }
     }
+    /// 鼠标滚轮上下滚动时左右滚动面板里的卡片，不用按住 ⇧（用户要求，2026-11-25）。默认关；触控板和妙控鼠标不受影响。
+    var wheelScrollsCards: Bool {
+        get { defaults.bool(forKey: "wheelScrollsCards") }
+        nonmutating set { defaults.set(newValue, forKey: "wheelScrollsCards") }
+    }
     var soundEffectsEnabled: Bool {
         get { defaults.object(forKey: "soundEffectsEnabled") as? Bool ?? true }
         nonmutating set { defaults.set(newValue, forKey: "soundEffectsEnabled") }

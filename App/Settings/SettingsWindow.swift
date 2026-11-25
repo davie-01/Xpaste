@@ -224,6 +224,7 @@ private struct GeneralSettingsView: View {
     let onEraseHistory: () throws -> Void
     let onRecognizeAgain: () throws -> Int
     @State private var sound: Bool
+    @State private var wheel: Bool
     @State private var direct: Bool
     @State private var plain: Bool
     @State private var retention: Double
@@ -239,6 +240,7 @@ private struct GeneralSettingsView: View {
         self.onEraseHistory = onEraseHistory
         self.onRecognizeAgain = onRecognizeAgain
         _sound = State(initialValue: preferences.soundEffectsEnabled)
+        _wheel = State(initialValue: preferences.wheelScrollsCards)
         _direct = State(initialValue: preferences.pasteToApplication)
         _plain = State(initialValue: preferences.alwaysPastePlainText)
         _retention = State(initialValue: Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention) ?? 2))
@@ -251,6 +253,10 @@ private struct GeneralSettingsView: View {
                 Divider()
                 switchRow(String(localized: "音效"), isOn: $sound)
                     .onChange(of: sound) { _, value in preferences.soundEffectsEnabled = value }
+                Divider()
+                switchRow(String(localized: "用鼠标滚轮滚动卡片"), detail: String(localized: "滚轮上下滚动就能左右翻看卡片，不用按住 ⇧。触控板不受影响。"),
+                          isOn: $wheel)
+                    .onChange(of: wheel) { _, value in preferences.wheelScrollsCards = value }
             }.padding(.horizontal, 10).background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 12))
             Text("粘贴项目").fontWeight(.semibold).padding(.leading, 10)
             VStack(alignment: .leading, spacing: 12) {
@@ -311,18 +317,22 @@ private struct GeneralSettingsView: View {
         } message: { Text(error ?? "") }
     }
 
-    private func switchRow(_ title: String, isOn: Binding<Bool>) -> some View {
+    private func switchRow(_ title: String, detail: String? = nil, isOn: Binding<Bool>) -> some View {
         HStack {
-            Text(title)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                if let detail { Text(detail).font(.caption).foregroundStyle(.secondary) }
+            }
             Spacer()
             Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.small)
                 .scaleEffect(0.84, anchor: .trailing).frame(width: 36, height: 16)
-        }.frame(height: 36)
+        }.frame(minHeight: 36).padding(.vertical, detail == nil ? 0 : 6)
     }
 
     private func refresh() {
         login = SettingsActions.isLoginEnabled
         sound = preferences.soundEffectsEnabled
+        wheel = preferences.wheelScrollsCards
         direct = preferences.pasteToApplication
         plain = preferences.alwaysPastePlainText
         retention = Double(RetentionPeriod.allCases.firstIndex(of: preferences.retention) ?? 2)

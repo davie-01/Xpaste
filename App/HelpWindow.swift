@@ -78,6 +78,7 @@ struct HelpView: View {
                 String(localized: "按 \(modifier(keys.quickPaste)) 加数字 1–9，直接粘贴面板里的前 9 条。"),
                 String(localized: "粘贴时按住 \(modifier(keys.plainText))，去掉字体、颜色等格式，以纯文本粘贴。"),
                 String(localized: "← → 移动选中，按住 ⇧ 可以多选，⌘A 全选；⌘C 只复制到剪贴板、不粘贴。"),
+                String(localized: "鼠标滚轮按住 ⇧ 左右滚动卡片；在“设置 › 通用”里打开“用鼠标滚轮滚动卡片”后不用按 ⇧。"),
                 String(localized: "卡片也可以直接拖到其他应用里。"),
             ]),
             HelpTopic(id: "find", title: "查找", symbol: "magnifyingglass", lines: [
