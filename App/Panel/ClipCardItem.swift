@@ -258,10 +258,10 @@ final class ClipCardItem: NSCollectionViewItem {
         // 原版在 Pinboard 里只显示名称，没有时间（M5 第 6 步实测）。
         timeLabel.isHidden = inPinboard
 
-        // 固定过的条目，标题栏用 Pinboard 的颜色、不显示来源图标，在历史里也是这样（M5 第 6 步实测）。
+        // 固定过的条目，标题栏用 Pinboard 的颜色，在历史里也是这样（M5 第 6 步实测）；来源图标照常显示（原版不显示，这里有意保留）。
         let source = AppAppearanceCache.shared.appearance(for: clip.sourceBundleID, storedColorHex: clip.sourceColorHex)
         appIcon.image = source.icon
-        appIcon.isHidden = pinboardColor != nil
+        appIcon.isHidden = false
         let headerColor = pinboardColor ?? source.color
         header.layer?.backgroundColor = headerColor.cgColor
         // 增强对比度：卡片加一圈描边和玻璃背景分开；标题栏底色浅时文字改黑色，时间不再半透明。
