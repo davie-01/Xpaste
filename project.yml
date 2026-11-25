@@ -50,7 +50,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.mars.XPaste
         PRODUCT_NAME: XPaste
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "2"
         GENERATE_INFOPLIST_FILE: YES
         # Sparkle 的键（更新源、公钥、关闭定时检查）没有 INFOPLIST_KEY_ 写法，放在这个文件里，和生成的键合并。
         INFOPLIST_FILE: App/Info.plist

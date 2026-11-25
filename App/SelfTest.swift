@@ -830,6 +830,63 @@ enum SelfTest {
             let bulkLeft = try store.clips(matching: ClipQuery(text: "批量撤销"), limit: 300).count
             check("一次删除 201 条时确认框说明无法撤销，不留撤销副本", undoableAnswer == false && panel.debugUndoDepth == undoDepth && bulkLeft == 0,
                   "\(String(describing: undoableAnswer)) 剩 \(bulkLeft)")
+
+            // 滚到后面、选中的一段从视口左边外面开始时删除：删除后选中的是这一段后面紧接着的那张，
+            // 它停在第一张在眼前的被删卡片原来的位置，眼前还是原来那一带；只删掉那几张卡片，后面没加载的补到末尾（用户真机）。
+            for index in 0..<80 { _ = try store.record(plain("滚动删除 \(index)")) }
+            panel.debugSearch("滚动删除")
+            await panel.debugSettle()
+            panel.debugScroll(toCard: 30, offset: 100)
+            await panel.debugSettle()
+            // 卡片 30 离左边 100，前面的 29 也在选中范围里、露出一截，算作第一张在眼前的被删卡片，后面那张会放到左端。
+            let shownOffset = panel.debugDeleteAnchorOffset(10...35) ?? -1
+            let leading = PanelMetrics.cardLeadingInset - PanelMetrics.selectionOutset
+            check("露出一截的被删卡片也算在眼前，位置限制在视口左端", abs(shownOffset - leading) < 1 && (panel.debugCardOffset(index: 29) ?? 0) < leading,
+                  "\(shownOffset)")
+            panel.debugSelect(indexes: 10...35, current: 35)
+            panel.confirmBatchDelete = { _, _ in true }
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            let afterRange = panel.debugSelectedIndex.flatMap { panel.debugCardOffset(index: $0) }
+            check("多选一段滚动后删除，选中后面紧接着的那张，停在被删卡片原来的位置",
+                  panel.debugSelectedPreviews == ["滚动删除 43"] && panel.debugSelectedIndex == 10
+                      && abs((afterRange ?? 0) - shownOffset) < 1 && panel.debugScrollX > 0,
+                  "选中 \(panel.debugSelectedPreviews) 第 \(String(describing: panel.debugSelectedIndex)) 张 位置 \(String(describing: afterRange)) 原 \(shownOffset)")
+            check("删除后卡片和数据一一对应，空位由后面的条目补上",
+                  panel.debugCardsMatchData && (50...54).contains(panel.debugLoadedCount) && panel.debugVisiblePreviews[9] == "滚动删除 70"
+                      && panel.debugVisiblePreviews[10] == "滚动删除 43" && panel.debugVisiblePreviews.last == "滚动删除 \(54 - panel.debugLoadedCount)",
+                  "已加载 \(panel.debugLoadedCount) \(panel.debugVisiblePreviews.suffix(3))")
+            // 选中的一段从眼前的某张开始（不在左端）：后面那张停在这张原来的位置。
+            panel.debugScroll(toCard: 20, offset: leading)
+            let midOffset = panel.debugCardOffset(index: 22) ?? -1
+            panel.debugSelect(indexes: 22...30, current: 30)
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            check("选中的一段从眼前某张开始时，后面那张停在这张原来的位置",
+                  panel.debugSelectedIndex == 22 && abs((panel.debugCardOffset(index: 22) ?? 0) - midOffset) < 1 && panel.debugCardsMatchData,
+                  "选中 \(String(describing: panel.debugSelectedIndex)) 位置 \(String(describing: panel.debugCardOffset(index: 22))) 原 \(midOffset)")
+            // 单条删除：视口不动，后面的那张挤到被删的位置。
+            panel.debugScroll(toCard: 10, offset: leading)
+            let scrollBefore = panel.debugScrollX
+            let singleOffset = panel.debugCardOffset(index: 11) ?? -1
+            panel.debugSelect(index: 11)
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            // 视口不动时删除带动画（被删的收起、后面的滑过来），动画结束后卡片才和数据一一对应。
+            for _ in 0..<150 where !panel.debugCardsMatchData { try? await Task.sleep(for: .milliseconds(10)) }
+            check("单条删除时视口不动，后面的那张挤到原位并被选中",
+                  panel.debugSelectedIndex == 11 && panel.debugSelectedPreviews == ["滚动删除 41"] && abs(panel.debugScrollX - scrollBefore) < 1
+                      && abs((panel.debugCardOffset(index: 11) ?? 0) - singleOffset) < 1 && panel.debugCardsMatchData,
+                  "选中 \(panel.debugSelectedPreviews) 滚动 \(panel.debugScrollX) 原 \(scrollBefore)")
+            // 选中的一段都不在眼前（滚到后面再全选前面几张）：后面那张放到视口左端。
+            panel.debugScroll(toCard: 30, offset: 100)
+            panel.debugSelect(indexes: 2...4, current: 4)
+            panel.debugPress(keyCode: 51)
+            await panel.debugSettle()
+            let leftOffset = panel.debugCardOffset(index: 2) ?? -1
+            check("被删的卡片都不在眼前时，后面那张放到视口左端",
+                  panel.debugSelectedIndex == 2 && abs(leftOffset - leading) < 1 && panel.debugCardsMatchData,
+                  "位置 \(leftOffset) 选中 \(String(describing: panel.debugSelectedIndex))")
             panel.debugSearch("")
             await panel.debugSettle()
             panel.debugPress(keyCode: 51)

@@ -1254,7 +1254,19 @@ final class PanelController: NSObject {
         let old = visibleClips
         visibleClips = Array(fetched.prefix(count))
         dataGeneration += 1
-        if selectFirst || !updateIncrementally(from: old, to: visibleClips) { collectionView.reloadData() }
+        // 删除后的这次刷新：先按旧布局算好删除后选中的那张要滚到哪里（卡片等宽，新旧布局里同一序号的位置相同）。
+        let anchor = selectFirst ? nil : pendingDeleteAnchor
+        pendingDeleteAnchor = nil
+        let target = anchor.flatMap { deleteScrollTarget(for: $0) }
+        let current = scrollView.contentView.bounds.origin.x
+        // 视口不用挪时，被删的卡片收起、后面的滑过来；要挪时不加动画，免得卡片从视口外一路扫过来。
+        let animated = target.map { abs($0 - current) < 0.5 } ?? false
+        if selectFirst || !updateIncrementally(from: old, to: visibleClips, animated: animated) { collectionView.reloadData() }
+        if let target, abs(target - current) >= 0.5 {
+            collectionView.layoutSubtreeIfNeeded()
+            scrollView.contentView.scroll(to: NSPoint(x: target, y: scrollView.contentView.bounds.origin.y))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
 
         emptyLabel.isHidden = !visibleClips.isEmpty
         let isFiltering = !searchField.stringValue.isEmpty || !filter.isEmpty
@@ -1280,16 +1292,16 @@ final class PanelController: NSObject {
         if selectFirst { preview.close() } else { updatePreview() }
     }
 
-    /// 刷新时只动变化的卡片（轻量化）：列表没变只是有几条内容更新（链接标题、改名等），或者开头多了几条新复制的，
-    /// 就局部插入、删除和重配；别的情况（删除、排序变化等）返回 false，由调用方整表重载。
-    private func updateIncrementally(from old: [ClipSummary], to new: [ClipSummary]) -> Bool {
+    /// 刷新时只动变化的卡片（轻量化）：列表没变只是有几条内容更新（链接标题、改名等），开头多了几条新复制的，
+    /// 或者中间删掉了几条（末尾由后面没加载的补上），就局部插入、删除和重配；别的情况（排序变化等）返回 false，由调用方整表重载。
+    private func updateIncrementally(from old: [ClipSummary], to new: [ClipSummary], animated: Bool = false) -> Bool {
         guard !old.isEmpty, collectionView.numberOfSections == 1, collectionView.numberOfItems(inSection: 0) == old.count else { return false }
         let oldIDs = old.map(\.id), newIDs = new.map(\.id)
         // 开头新增了几条：新列表去掉开头这几条后，是旧列表的开头部分。
         guard let added = (0...min(new.count, 20)).first(where: { k in
             let rest = newIDs.dropFirst(k)
             return rest.count <= oldIDs.count && rest.elementsEqual(oldIDs.prefix(rest.count))
-        }) else { return false }
+        }) else { return updateRemovals(from: old, to: new, animated: animated) }
         let kept = new.count - added
         let removedTail = old.count - kept
         let changed = (0..<kept).filter { old[$0] != new[added + $0] }.map { IndexPath(item: added + $0, section: 0) }
@@ -1301,6 +1313,70 @@ final class PanelController: NSObject {
         // 位置变了的旧卡片由批量更新挪过去；内容有变化的再按新数据重配。
         if !changed.isEmpty { collectionView.reloadItems(at: Set(changed)) }
         return true
+    }
+
+    /// 中间删掉了几条：新列表按顺序是旧列表去掉若干条，后面可能接上几条原来没加载的。只删掉那几张卡片、在末尾补上新的。
+    private func updateRemovals(from old: [ClipSummary], to new: [ClipSummary], animated: Bool) -> Bool {
+        var removed: [IndexPath] = []
+        var changed: [IndexPath] = []
+        var next = 0
+        for (index, clip) in old.enumerated() {
+            if next < new.count, new[next].id == clip.id {
+                if new[next] != clip { changed.append(IndexPath(item: next, section: 0)) }
+                next += 1
+            } else {
+                removed.append(IndexPath(item: index, section: 0))
+            }
+        }
+        // 末尾接上的必须是原来没有的条目；删掉的条目也不能换个位置又出现（那是排序变了）。
+        let oldIDs = Set(old.map(\.id))
+        guard !removed.isEmpty, !new[next...].contains(where: { oldIDs.contains($0.id) }) else { return false }
+        let appended = Set((next..<new.count).map { IndexPath(item: $0, section: 0) })
+        let updates = {
+            self.collectionView.deleteItems(at: Set(removed))
+            if !appended.isEmpty { self.collectionView.insertItems(at: appended) }
+        }
+        if animated { collectionView.animator().performBatchUpdates(updates) } else { collectionView.performBatchUpdates(updates) }
+        if !changed.isEmpty { collectionView.reloadItems(at: Set(changed)) }
+        return true
+    }
+
+    /// 删除后让选中的那张（被删那一段后面紧接着的一张）回到被删卡片原来在视口里的位置，眼前还是原来那一带。
+    private struct DeleteAnchor {
+        let id: ClipSummary.ID
+        /// 删除前屏幕上第一张被删卡片的左边相对视口左边的距离；被删的一张都不在眼前时为 nil，放到视口左端。
+        let offset: CGFloat?
+    }
+    private var pendingDeleteAnchor: DeleteAnchor?
+
+    /// 卡片单元（含选中描边的外扩）在视口左端时的左边距。
+    private var leadingCellInset: CGFloat { PanelMetrics.cardLeadingInset - PanelMetrics.selectionOutset }
+
+    /// 删除前调用：记下第一张在眼前的被删卡片的位置，限制在视口里能完整看到一张卡片的范围内。
+    private func deleteAnchorOffset(for indexes: [Int]) -> CGFloat? {
+        let visible = scrollView.contentView.bounds
+        for index in indexes {
+            guard let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { continue }
+            if frame.minX >= visible.maxX { break }
+            guard frame.maxX > visible.minX else { continue }
+            let offset = frame.minX - visible.minX
+            return min(max(offset, leadingCellInset), max(leadingCellInset, visible.width - frame.width - leadingCellInset))
+        }
+        return nil
+    }
+
+    /// 按当前布局算出删除后视口的横向位置。卡片等宽，序号相同的卡片在删除前后的布局里位置一样，所以删除前就能算。
+    /// 选中的是第一条时回到最左边，前面的提示卡片也露出来（和 `applySelection` 一致）。
+    private func deleteScrollTarget(for anchor: DeleteAnchor) -> CGFloat? {
+        guard let index = visibleClips.firstIndex(where: { $0.id == anchor.id }) else { return nil }
+        guard index > 0 else { return 0 }
+        let count = collectionView.numberOfSections == 1 ? collectionView.numberOfItems(inSection: 0) : 0
+        guard index < count, visibleClips.count <= count,
+              let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame,
+              let last = collectionView.layoutAttributesForItem(at: IndexPath(item: visibleClips.count - 1, section: 0))?.frame else { return nil }
+        let width = scrollView.contentView.bounds.width
+        let contentWidth = last.maxX + layout.sectionInset.right
+        return min(max(frame.minX - (anchor.offset ?? leadingCellInset), 0), max(0, contentWidth - width))
     }
 
     private func currentQuery() -> ClipQuery {
@@ -1375,6 +1451,7 @@ final class PanelController: NSObject {
         } else if let first = indexes.first, first > 0 {
             neighbor = visibleClips[first - 1].id
         }
+        let anchorOffset = deleteAnchorOffset(for: indexes)
         do {
             // 先留一份完整副本供撤销；删除成功后才放进撤销栈，删除失败不留下无效的撤销记录（审查 04）。
             let saved = undoable ? try store.restorable(ids: ids) : []
@@ -1395,6 +1472,7 @@ final class PanelController: NSObject {
         }
         selectedID = neighbor
         anchorID = neighbor
+        pendingDeleteAnchor = neighbor.map { DeleteAnchor(id: $0, offset: anchorOffset) }
         reload(selectFirst: false)
     }
 
@@ -3014,6 +3092,29 @@ extension PanelController {
         selectedID = visibleClips[index].id
         applySelection(scroll: false)
     }
+    /// 和 ⇧ 扩选一样：选中一段，`index` 是当前选中的那张。
+    func debugSelect(indexes: ClosedRange<Int>, current index: Int) {
+        guard visibleClips.indices.contains(indexes.lowerBound), visibleClips.indices.contains(indexes.upperBound) else { return }
+        // 先设当前项（它会把多选重置成这一张），再设整段。
+        selectedID = visibleClips[index].id
+        anchorID = visibleClips[indexes.lowerBound].id
+        selectedIDs = Set(indexes.map { visibleClips[$0].id })
+        applySelection(scroll: false)
+    }
+    /// 第 index 张卡片单元的左边相对视口左边的距离。
+    func debugCardOffset(index: Int) -> CGFloat? {
+        guard let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return nil }
+        return frame.minX - scrollView.contentView.bounds.minX
+    }
+    /// 把第 index 张卡片滚到视口里离左边 `offset` 的位置。
+    func debugScroll(toCard index: Int, offset: CGFloat) {
+        guard let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return }
+        scrollView.contentView.scroll(to: NSPoint(x: frame.minX - offset, y: scrollView.contentView.bounds.minY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+    var debugScrollX: CGFloat { scrollView.contentView.bounds.minX }
+    /// 删除这一段时记下的对齐位置（第一张在眼前的被删卡片，露出一截也算）。
+    func debugDeleteAnchorOffset(_ indexes: ClosedRange<Int>) -> CGFloat? { deleteAnchorOffset(for: Array(indexes)) }
 
     var debugPreviewClipID: ClipSummary.ID? { preview.isShown ? preview.clipID : nil }
     var debugPreviewAwaitsImage: Bool { preview.awaitsImage }
