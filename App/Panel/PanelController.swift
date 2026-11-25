@@ -49,29 +49,14 @@ final class BarelessScrollView: NSScrollView {
     var convertsVerticalWheel: () -> Bool = { false }
 
     override func scrollWheel(with event: NSEvent) {
-        guard convertsVerticalWheel(), let horizontal = Self.horizontalWheelEvent(from: event) else {
-            super.scrollWheel(with: event)
-            return
-        }
-        if event.hasPreciseScrollingDeltas {
-            // 按像素计的（平滑滚动工具发来的带手势阶段的事件、高精度滚轮）：换轴后交给系统不会滚动，
-            // 滚动视图的手势跟踪认不出这种事件（自检实测：一整段平滑滚动交给系统后视口不动）。
-            // 这些位移已经由发送方做过平滑和惯性，直接按像素移动视口。方向与按行计的滚轮换轴后一致。
-            scrollHorizontally(by: -horizontal.scrollingDeltaX)
-        } else {
-            // 按行计的普通滚轮：交给系统，速度和方向与按住 ⇧ 滚动一样。
+        // 换轴后一律交给系统处理：平滑推进、惯性和到头回弹都和按住 ⇧ 滚动时同一套机制。
+        // 1.0.2 曾对按像素计的事件直接移动视口，惯性事件虽然都应用了，但每个事件直接跳位、到头不回弹，
+        // 用户真机觉得 Mac Mouse Fix 的平滑惯性没了（日志对照：两种情况惯性事件数量和位移相同）。
+        if convertsVerticalWheel(), let horizontal = Self.horizontalWheelEvent(from: event) {
             super.scrollWheel(with: horizontal)
+        } else {
+            super.scrollWheel(with: event)
         }
-    }
-
-    private func scrollHorizontally(by delta: CGFloat) {
-        guard let documentView, delta != 0 else { return }
-        let clip = contentView
-        let maxX = max(0, documentView.frame.width - clip.bounds.width)
-        let x = min(max(clip.bounds.origin.x + delta, 0), maxX)
-        guard x != clip.bounds.origin.x else { return }
-        clip.scroll(to: NSPoint(x: x, y: clip.bounds.origin.y))
-        reflectScrolledClipView(clip)
     }
 
     /// 是不是鼠标滚轮发出的滚动（不是触控板、妙控鼠标）。

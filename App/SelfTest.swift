@@ -924,17 +924,27 @@ enum SelfTest {
                     events.append(wheel(0, momentum: 3, units: .pixel, sourcePID: sourcePID))
                     return events.compactMap { $0 }
                 }
+                // 照真实节奏喂：每个事件带递增的时间戳，之间让出主线程 8 毫秒。系统按时间戳处理手势，
+                // 一口气喂、时间戳都一样时它不会滚动（1.0.2 时据此误判“交给系统不滚”）。
+                func feed(_ events: [NSEvent]) async {
+                    var stamp = ProcessInfo.processInfo.systemUptime
+                    for event in events {
+                        guard let cg = event.cgEvent?.copy() else { continue }
+                        cg.timestamp = CGEventTimestamp(stamp * 1_000_000_000)
+                        stamp += 0.008
+                        if let timed = NSEvent(cgEvent: cg) { panel.debugScrollView.scrollWheel(with: timed) }
+                        try? await Task.sleep(for: .milliseconds(8))
+                    }
+                    try? await Task.sleep(for: .milliseconds(800))
+                }
                 panel.debugScroll(toCard: 10, offset: leading)
                 try? await Task.sleep(for: .milliseconds(300))
                 let gestureStart = panel.debugScrollX
-                for event in gesture(sourcePID: 0) { panel.debugScrollView.scrollWheel(with: event) }
-                try? await Task.sleep(for: .milliseconds(400))
+                await feed(gesture(sourcePID: 0))
                 let padGesture = panel.debugScrollX
-                for event in gesture(sourcePID: 920) { panel.debugScrollView.scrollWheel(with: event) }
-                for _ in 0..<100 where abs(panel.debugScrollX - gestureStart) < 0.5 { try? await Task.sleep(for: .milliseconds(10)) }
-                try? await Task.sleep(for: .milliseconds(400))
+                await feed(gesture(sourcePID: 920))
                 let toolGesture = panel.debugScrollX
-                check("平滑滚动工具的一整段滚动（含惯性）实际滚动卡片，方向和普通滚轮一样；触控板的竖向滑动不动",
+                check("平滑滚动工具的一整段滚动（含惯性）换轴后由系统处理、实际滚动卡片，方向和普通滚轮一样；触控板的竖向滑动不动",
                       abs(padGesture - gestureStart) < 0.5 && toolGesture > gestureStart + 100,
                       "起点 \(gestureStart) 触控板 \(padGesture) 工具 \(toolGesture)")
                 preferences.wheelScrollsCards = wheelSetting
