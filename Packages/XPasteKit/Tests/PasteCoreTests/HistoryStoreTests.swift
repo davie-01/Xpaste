@@ -335,6 +335,106 @@ private let t0 = Date(timeIntervalSinceReferenceDate: 800_000_000)
     }
 }
 
+/// 1.0.6 之前的文本条目按新规则重算（v8-rich-refresh，L178、L179）。
+@Suite struct RichRefreshMigrationTests {
+    /// 把库退回到没有 v8 迁移的样子，并把条目改成旧规则下的状态：没有卡片缓存，字符数是旧值。
+    private func rollBack(_ temp: TempStore, oldCharCount: [Int64: Int]) throws {
+        var handle: OpaquePointer?
+        let path = temp.directory.appendingPathComponent("db.sqlite").path
+        #expect(sqlite3_open(path, &handle) == SQLITE_OK)
+        var sql = """
+            DELETE FROM grdb_migrations WHERE identifier = 'v8-rich-refresh';
+            DROP INDEX item_on_rich_pending;
+            ALTER TABLE item DROP COLUMN richState;
+            UPDATE item SET richPreview = NULL WHERE kind = 'text';
+            """
+        for (id, count) in oldCharCount { sql += "UPDATE item SET charCount = \(count) WHERE id = \(id);" }
+        #expect(sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(handle)
+        try temp.reopen()
+    }
+
+    @Test func oldTextItemsAreRecomputedWithTheNewRules() throws {
+        let temp = try TempStore()
+        let rich = NSMutableAttributedString(string: "网页正文", attributes: [.font: NSFont.boldSystemFont(ofSize: 18)])
+        rich.append(NSAttributedString(string: "\u{FFFC}后面"))
+        let rtf = try #require(rich.rtf(from: NSRange(location: 0, length: rich.length), documentAttributes: [:]))
+        let web = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.plainText, data: Data("网页正文后面".utf8)),
+            ClipRepresentation(type: ClipType.rtf, data: rtf),
+        ])]), now: t0)
+        let wps = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.plainText, data: Data("WPS 文字".utf8)),
+            ClipRepresentation(type: ClipType.html, data: Data("<p>WPS 文字</p>".utf8)),
+        ])]), now: t0.addingTimeInterval(1))
+        let plain = try temp.store.record(text("纯文本"), now: t0.addingTimeInterval(2))
+        let image = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.png, data: Data([0x89, 0x50, 0x4E, 0x47])),
+        ])]), now: t0.addingTimeInterval(3))
+        let expectedCount = try #require(try temp.store.summary(id: web.id)).charCount
+        #expect(expectedCount == RichText.decode(ClipItemSnapshot(representations: [ClipRepresentation(type: ClipType.rtf, data: rtf)]))?.length)
+        // 新规则入库的条目不排队。
+        #expect(try temp.store.nextTextAwaitingRichRefresh() == nil)
+
+        try rollBack(temp, oldCharCount: [web.id: 1])
+        #expect(try temp.store.summary(id: web.id)?.richPreview == nil)
+
+        // 从最新的开始：纯文本只标记；WPS 交回 HTML；网页按 RTF 重算缓存和字符数；图片不排队。
+        var seen: [Int64] = []
+        while let job = try temp.store.nextTextAwaitingRichRefresh() {
+            #expect(!seen.contains(job.id))
+            seen.append(job.id)
+            switch try temp.store.refreshRich(job) {
+            case .done(let changed):
+                #expect(job.id == plain.id ? !changed : (job.id == web.id && changed))
+            case .needsHTML(let html):
+                #expect(job.id == wps.id && String(decoding: html, as: UTF8.self) == "<p>WPS 文字</p>")
+                let data = try #require(HistoryStore.richPreviewData(from: NSAttributedString(string: "WPS 文字")))
+                #expect(try temp.store.finishRichRefresh(job, richPreview: data))
+            }
+        }
+        #expect(seen == [plain.id, wps.id, web.id] && !seen.contains(image.id))
+        let webAfter = try #require(try temp.store.summary(id: web.id))
+        #expect(webAfter.charCount == expectedCount)
+        let head = try #require(webAfter.richPreview.flatMap(RichText.decodePreview))
+        #expect((head.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize == 18)
+        let wpsAfter = try #require(try temp.store.summary(id: wps.id))
+        #expect(wpsAfter.richPreview.flatMap(RichText.decodePreview)?.string == "WPS 文字")
+        #expect(wpsAfter.charCount == "WPS 文字".utf16.count)
+        #expect(try temp.store.summary(id: plain.id)?.richPreview == nil)
+        // 再打开不会重做。
+        try temp.reopen()
+        #expect(try temp.store.nextTextAwaitingRichRefresh() == nil)
+    }
+
+    @Test func lateResultsForDeletedOrRecopiedItemsAreDropped() throws {
+        let temp = try TempStore()
+        let wps = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.plainText, data: Data("WPS".utf8)),
+            ClipRepresentation(type: ClipType.html, data: Data("<p>WPS</p>".utf8)),
+        ])]), now: t0)
+        let other = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.plainText, data: Data("另一条".utf8)),
+            ClipRepresentation(type: ClipType.html, data: Data("<p>另一条</p>".utf8)),
+        ])]), now: t0.addingTimeInterval(1))
+        try rollBack(temp, oldCharCount: [:])
+        let data = try #require(HistoryStore.richPreviewData(from: NSAttributedString(string: "WPS")))
+        // 转换期间被删：不写、不出错。
+        let job = OCRJob(id: wps.id, uuid: wps.uuid)
+        #expect(try temp.store.refreshRich(job) == .needsHTML(Data("<p>WPS</p>".utf8)))
+        try temp.store.removeFromHistory(ids: [wps.id])
+        #expect(try !temp.store.finishRichRefresh(job, richPreview: data))
+        // 转换期间已经有了缓存（同样内容再复制、补写过）：不覆盖，但标记已处理。
+        let otherJob = OCRJob(id: other.id, uuid: other.uuid)
+        #expect(try temp.store.refreshRich(otherJob) == .needsHTML(Data("<p>另一条</p>".utf8)))
+        let existing = try #require(HistoryStore.richPreviewData(from: NSAttributedString(string: "已有")))
+        #expect(try temp.store.fillRichPreview(existing, for: other.id))
+        #expect(try !temp.store.finishRichRefresh(otherJob, richPreview: data))
+        #expect(try temp.store.summary(id: other.id)?.richPreview.flatMap(RichText.decodePreview)?.string == "已有")
+        #expect(try temp.store.nextTextAwaitingRichRefresh() == nil)
+    }
+}
+
 /// 更新版本写过的库（N11）：旧版本拒绝打开，不改动库，数据还在。
 @Suite struct NewerDatabaseTests {
     @Test func olderBuildRefusesAndLeavesTheDatabaseAlone() throws {

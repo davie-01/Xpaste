@@ -130,6 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         linkIndexer = links
         Task { await links.kick() }
 
+        refreshOldRichPreviews()
+
         let stack = StackController(store: store) { [weak self] in self?.monitor.acknowledge(changeCount: $0) }
         stack.onPasted = { [weak self] in
             self?.panelController.historyDidChange()
@@ -730,6 +732,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             let filled = await Task.detached(priority: .utility) { (try? store.fillRichPreview(data, for: id)) ?? false }.value
             if filled { self?.panelController.historyDidChange() }
+        }
+    }
+
+    /// 1.0.6 之前的文本条目按新规则补算（v8-rich-refresh，L178、L179）：有 RTF、RTFD 的重算卡片缓存和字符数；
+    /// 只有 HTML 的（WPS、Codex 等）在主线程转成富文本、补写卡片缓存，字符数仍按纯文本。
+    /// 启动后在后台从最新的一条往前逐条做，做完就不再排队；HTML 转换之间让出主线程，不影响面板操作。
+    /// 每补好一批刷新一次面板，最后再刷新一次。
+    private func refreshOldRichPreviews() {
+        let store = store!
+        Task { [weak self] in
+            var processed = 0, changed = 0, pendingRefresh = 0
+            let started = ContinuousClock.now
+            while true {
+                let next = await Task.detached(priority: .utility) { () -> Result<(OCRJob, HistoryStore.RichRefreshStep)?, Error> in
+                    Result {
+                        guard let job = try store.nextTextAwaitingRichRefresh() else { return nil }
+                        return (job, try store.refreshRich(job))
+                    }
+                }.value
+                guard case .success(let step) = next else {
+                    if case .failure(let error) = next { Log.capture.error("补算旧文本条目失败: \(String(describing: error))") }
+                    break
+                }
+                guard let (job, result) = step, let self else { break }
+                processed += 1
+                switch result {
+                case .done(let didChange):
+                    if didChange { changed += 1; pendingRefresh += 1 }
+                case .needsHTML(let html):
+                    // HTML 转换用 WebKit，只能在主线程；超过 2 MB、转不出来的记成没有缓存，仍显示纯文本。
+                    let data = Log.measure("html-preview") { RichText.decodeHTML(html) }.flatMap(HistoryStore.richPreviewData)
+                    let filled = await Task.detached(priority: .utility) { (try? store.finishRichRefresh(job, richPreview: data)) ?? false }.value
+                    if filled { changed += 1; pendingRefresh += 1 }
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                if pendingRefresh >= 20 {
+                    pendingRefresh = 0
+                    self.panelController.historyDidChange()
+                }
+            }
+            if pendingRefresh > 0 { self?.panelController.historyDidChange() }
+            if processed > 0 {
+                Log.capture.notice("旧文本条目按新规则补算完成：\(processed) 条，更新 \(changed) 条，用时 \(String(describing: ContinuousClock.now - started))")
+            }
         }
     }
 
