@@ -23,10 +23,16 @@ enum PreviewContent {
     /// 内容读不出来。
     case unavailable
 
-    /// 预览里实际显示的文本，量尺寸和显示用同一份。
-    static func displayText(_ text: String, rich: NSAttributedString?) -> NSAttributedString {
-        rich.map { RichTextDisplay.prepare($0, font: .systemFont(ofSize: 13)) }
-            ?? NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor])
+    /// 纯文本预览显示的文本，量尺寸和显示用同一份。富文本见 `displayRich`。
+    static func displayText(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor])
+    }
+
+    /// 富文本的显示副本和整块底色。`rich` 已清掉表格布局（`RichTextDisplay.clearingTextBlocks`）。
+    /// 比文字区宽的图片缩到文字区宽度（XPaste 的增强，用户决定，2026-11-26）：浮层宽度按原版只量前半屏高度，
+    /// 后面更宽的图原版按原尺寸排、右边被裁掉。浮层尺寸仍按原始模型量，不受缩放影响。
+    static func displayRich(_ rich: NSAttributedString, maxAttachmentWidth: CGFloat?) -> RichTextDisplay.Prepared {
+        RichTextDisplay.prepare(rich, font: .systemFont(ofSize: 13), keepsLinks: false, maxAttachmentWidth: maxAttachmentWidth)
     }
 
     var size: NSSize {
@@ -36,8 +42,9 @@ enum PreviewContent {
         case .link(_, _, _, let size), .files(_, _, let size): size
         case .text(let text, let rich):
             // 按排版量尺寸，长文本的浮层会变宽变高（原版 6.6.2 的做法）；屏幕取 `NSScreen.main`，和原版一致。
+            // 富文本量预览模型（清掉了表格布局，原版如此），纯文本按显示用的文本量。
             PanelMetrics.previewSize(forContent: PanelMetrics.previewTextContentSize(
-                Self.displayText(text, rich: rich), screenSize: NSScreen.main?.frame.size ?? NSSize(width: 1800, height: 1169)))
+                rich ?? Self.displayText(text), screenSize: NSScreen.main?.frame.size ?? NSSize(width: 1800, height: 1169)))
         case .unavailable: PanelMetrics.previewTextSize
         }
     }
@@ -59,65 +66,100 @@ final class PreviewPopover: NSObject {
     var onShare: ((NSView) -> Void)?
     var onEdit: (() -> Void)?
 
-    private let popover = NSPopover()
-    private let controller = PreviewViewController()
+    private var popover = NSPopover()
+    private var controller = PreviewViewController()
     private var resignObserver: NSObjectProtocol?
     private var keyMonitor: Any?
     private var clickMonitor: Any?
     private weak var anchorWindow: NSWindow?
     private(set) var clipID: ClipSummary.ID?
+    /// 业务上浮层是否开着。`close()` 一调用就清掉，不等 AppKit 的 `isShown`：关闭带淡出时，`isShown` 要等淡出结束才变 false，
+    /// 期间再打开、再判断都按这个标记（原版在 popoverWillClose 里清它自己的 isDisplayed，做法相同；用户核对原版主程序，2026-11-27）。
+    private var isDisplayed = false
 
-    var isShown: Bool { popover.isShown }
+    var isShown: Bool { isDisplayed }
     var window: NSWindow? { controller.viewIfLoaded?.window }
     /// 当前显示的是图片，但原图还没解码好。
-    var awaitsImage: Bool { popover.isShown && controller.awaitsImage }
-    var showsImage: Bool { popover.isShown && controller.showsImage }
+    var awaitsImage: Bool { isDisplayed && controller.awaitsImage }
+    var showsImage: Bool { isDisplayed && controller.showsImage }
     /// 文本预览当前显示的内容（含格式）。
-    var shownText: NSAttributedString? { popover.isShown ? controller.shownText : nil }
+    var shownText: NSAttributedString? { isDisplayed ? controller.shownText : nil }
+    /// 自检用：文本预览的滚动位置、图片预览的缩放和滚动位置。
+    var debugTextScrollY: CGFloat? { isDisplayed ? controller.debugTextScrollY : nil }
+    var debugTextScrollerValue: Float? { isDisplayed ? controller.debugTextScrollerValue : nil }
+    func debugScrollText(toY y: CGFloat) { controller.debugScrollText(toY: y) }
+    var debugImageZoom: (magnification: CGFloat, origin: NSPoint)? { isDisplayed ? controller.debugImageZoom : nil }
+    func debugZoomImage(_ magnification: CGFloat) { controller.debugZoomImage(magnification) }
 
     /// 后台解码好的原图。期间已经切到别的条目或关掉浮层就丢弃。
     func setImage(_ image: NSImage?, for id: ClipSummary.ID) {
-        guard popover.isShown, clipID == id else { return }
+        guard isDisplayed, clipID == id else { return }
         controller.setImage(image)
     }
 
     override init() {
         super.init()
-        popover.contentViewController = controller
-        // 关闭时机全部由面板决定：切换条目时浮层要留着。
+        configurePopover()
+        rebuildContent()
+    }
+
+    /// 关闭时机全部由面板决定：切换条目时浮层要留着。打开、关闭和切换条目时的移动都带系统过渡（用户决定，2026-11-27）。
+    private func configurePopover() {
         popover.behavior = .applicationDefined
-        popover.animates = false
+        popover.animates = true
+        popover.delegate = self
+    }
+
+    /// 换一套新的内容视图（内容控制器、文本视图、滚动视图都是新的）。每次打开浮层前调用：
+    /// 原版每次打开空格预览都新建内容视图，新视图从文首开始，不会带着上一次的滚动位置、缩放、选区或焦点状态
+    /// （用户核对原版主程序，2026-11-27；L180）。打开期间切换条目仍复用这一套。
+    /// 弹出框本身复用（用户选定）；只有上一次还在淡出时换一个新的弹出框，淡出中的那个不能再拿来显示。
+    private func rebuildContent() {
+        if popover.isShown {
+            popover = NSPopover()
+            configurePopover()
+        }
+        let controller = PreviewViewController()
         controller.onClose = { [weak self] in self?.onCloseButton?() }
         controller.pinMenu = { [weak self] in self?.pinMenu?() }
         controller.onFooterAction = { [weak self] in self?.onFooterAction?() }
         controller.onShare = { [weak self] in self?.onShare?($0) }
         controller.onEdit = { [weak self] in self?.onEdit?() }
+        popover.contentViewController = controller
+        self.controller = controller
     }
 
-    /// 显示或切换到另一条。同一条再次调用只更新位置，不重置滚动位置和选区。
+    /// 显示或切换到另一条。同一条再次调用只更新位置，不重置滚动位置和选区。没在显示时换一套新视图再打开。
+    /// 尺寸只量一次，同时交给内容配置和弹出框；内容配好之后再一起更新尺寸和锚点（切换条目时少做重复工作，用户分析，2026-11-27）。
     func show(clip: ClipSummary, content: @autoclosure () -> PreviewContent, relativeTo rect: NSRect, of view: NSView) {
-        if clip.id != clipID || !popover.isShown {
+        let opening = !isDisplayed
+        if opening { rebuildContent() }
+        if clip.id != clipID || opening {
             let content = content()
-            controller.configure(title: ClipCardItem.typeTitle(for: clip), content: content)
-            popover.contentSize = content.size
+            let size = content.size
+            controller.configure(title: ClipCardItem.typeTitle(for: clip), content: content, size: size)
             clipID = clip.id
+            if popover.contentSize != size { popover.contentSize = size }
         }
-        if popover.isShown {
-            popover.positioningRect = rect
-        } else {
+        if opening {
+            isDisplayed = true
             anchorWindow = view.window
             popover.show(relativeTo: rect, of: view, preferredEdge: view.isFlipped ? .minY : .maxY)
             if let window { WindowSharing.apply(to: window) }
             observeResign()
             installKeyMonitor()
+        } else {
+            popover.positioningRect = rect
         }
     }
 
+    /// 列表滚动后让浮层跟上卡片。锚点矩形在集合视图坐标里，滚动时它本身不变，要重设一次浮层才会重新定位，不能因为相等就跳过。
     func move(to rect: NSRect) {
-        guard popover.isShown else { return }
+        guard isDisplayed else { return }
         popover.positioningRect = rect
     }
 
+    /// 业务上立即关闭，画面淡出。网页视图、快速查看这些等淡出结束再放（`popoverDidClose`），免得淡出时先变空白。
     func close() {
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
         resignObserver = nil
@@ -126,9 +168,8 @@ final class PreviewPopover: NSObject {
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
         clipID = nil
-        // 网页视图和快速查看各带一个辅助进程，浮层关掉就放掉。
-        controller.releaseHeavyViews()
-        guard popover.isShown else { return }
+        guard isDisplayed else { return }
+        isDisplayed = false
         popover.close()
     }
 
@@ -306,6 +347,16 @@ private final class PreviewViewController: NSViewController {
     private(set) var awaitsImage = false
     var showsImage: Bool { !imageScroll.isHidden && imageView.image != nil }
     var shownText: NSAttributedString? { scrollView.isHidden ? nil : textView.attributedString() }
+    var debugTextScrollY: CGFloat? { scrollView.isHidden ? nil : scrollView.contentView.bounds.origin.y }
+    var debugTextScrollerValue: Float? { scrollView.isHidden ? nil : scrollView.verticalScroller?.floatValue }
+    func debugScrollText(toY y: CGFloat) { textView.scroll(NSPoint(x: 0, y: y)) }
+    var debugImageZoom: (magnification: CGFloat, origin: NSPoint)? {
+        imageScroll.isHidden ? nil : (imageScroll.magnification, imageScroll.contentView.bounds.origin)
+    }
+    func debugZoomImage(_ magnification: CGFloat) {
+        imageScroll.magnification = magnification
+        imageScroll.contentView.scroll(to: NSPoint(x: imageScroll.contentView.bounds.width, y: imageScroll.contentView.bounds.height))
+    }
     private let colorLabel = NSTextField(labelWithString: "")
     private static let unavailableTitleText = String(localized: "无法预览")
     private static let unavailableDetailText = String(localized: "这项内容已保存，仍然可以粘贴。")
@@ -510,7 +561,8 @@ private final class PreviewViewController: NSViewController {
         }
     }
 
-    func configure(title: String, content: PreviewContent) {
+    /// `size` 是 `content.size`，由调用方量好传进来，不再重复量。
+    func configure(title: String, content: PreviewContent, size: NSSize) {
         loadViewIfNeeded()
         titleLabel.stringValue = title
         scrollView.isHidden = true
@@ -537,15 +589,33 @@ private final class PreviewViewController: NSViewController {
         footerLabel.lineBreakMode = .byTruncatingTail
         unavailableTitle.stringValue = String(localized: "无法预览")
         unavailableDetail.stringValue = String(localized: "这项内容已保存，仍然可以粘贴。")
+        textView.appearance = nil
+        textView.backgroundColor = PanelMetrics.contentBackgroundColor
+        scrollView.backgroundColor = PanelMetrics.contentBackgroundColor
 
         switch content {
         case .text(let text, let rich):
             scrollView.isHidden = false
             textView.isRichText = rich != nil
-            textView.textStorage?.setAttributedString(PreviewContent.displayText(text, rich: rich))
+            if let rich {
+                // 富文本按原版的规则铺整块底色，没写颜色的文字按底色深浅选外观。
+                // 文字区宽度 = 内容区宽度 − 左右内边距 − 行片段留白 − 占位的滚动条（叠在内容上的不占位）。
+                let contentWidth = size.width - PanelMetrics.previewContentInset * 2
+                let scroller = scrollView.scrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+                let lineWidth = contentWidth - textView.textContainerInset.width * 2 - (textView.textContainer?.lineFragmentPadding ?? 0) * 2 - scroller
+                let prepared = PreviewContent.displayRich(rich, maxAttachmentWidth: lineWidth)
+                let backdrop = prepared.backdrop(for: view.effectiveAppearance)
+                textView.appearance = prepared.textAppearance(for: view.effectiveAppearance)
+                textView.backgroundColor = backdrop
+                scrollView.backgroundColor = backdrop
+                textView.textStorage?.setAttributedString(prepared.text)
+            } else {
+                textView.textStorage?.setAttributedString(PreviewContent.displayText(text))
+            }
             textView.setSelectedRange(NSRange(location: 0, length: 0))
             textView.scrollToBeginningOfDocument(nil)
-            let stats = TextStatistics(text)
+            // 有富文本时按富文本的字符串统计，字符数是字符个数（原版：百度那条 3,212，UTF-16 是 3,220）。
+            let stats = rich.map { TextStatistics($0.string, countsCharacters: true) } ?? TextStatistics(text)
             footerLabel.attributedStringValue = PreviewText.footer([
                 (nil, String(localized: "\(stats.characters) 个字符")),
                 (nil, String(localized: "\(stats.words) 单词")),
@@ -820,5 +890,14 @@ extension PreviewViewController: WKNavigationDelegate {
         spinner.stopAnimation(nil)
         unavailableTitle.isHidden = false
         unavailableDetail.isHidden = false
+    }
+}
+
+extension PreviewPopover: NSPopoverDelegate {
+    /// 淡出结束：放掉这个弹出框里内容的网页视图、快速查看和原图（各带辅助进程或占大块内存）。
+    /// 期间已经重新打开的话，那是另一套内容，不受影响。
+    func popoverDidClose(_ notification: Notification) {
+        guard let closed = notification.object as? NSPopover else { return }
+        (closed.contentViewController as? PreviewViewController)?.releaseHeavyViews()
     }
 }

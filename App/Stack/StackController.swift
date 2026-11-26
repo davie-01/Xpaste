@@ -520,9 +520,9 @@ final class StackController: NSObject {
         var accessory = StackListView.Row.Accessory.none
         switch clip.kind {
         case .text, .unknown:
-            if clip.title == nil, let data = clip.richPreview, let rich = NSAttributedString(rtf: data, documentAttributes: nil) {
+            if clip.title == nil, let data = clip.richPreview, let rich = RichText.decodePreview(data) {
                 let trimmed = rich.attributedSubstring(from: NSRange(location: 0, length: min(rich.length, 300)))
-                text = RichTextDisplay.prepare(trimmed, font: font)
+                text = RichTextDisplay.adaptToAppearance(trimmed, font: font)
             }
         case .link:
             if let picture = clip.linkImage == .none ? nil : ThumbnailCache.shared.image(for: clip) {

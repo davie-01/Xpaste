@@ -483,3 +483,117 @@ private func textItem(_ string: String) -> ClipItemSnapshot {
         }
     }
 }
+
+@Suite struct RichTextTests {
+    /// 带一张 4×2 PNG 附件的 flat RTFD。
+    static func rtfdWithImage(prefix: String = "图前") throws -> (NSAttributedString, Data) {
+        let image = NSImage(size: NSSize(width: 4, height: 2), flipped: false) { rect in
+            NSColor.red.setFill(); rect.fill(); return true
+        }
+        let tiff = try #require(image.tiffRepresentation)
+        let png = try #require(NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]))
+        let wrapper = FileWrapper(regularFileWithContents: png)
+        wrapper.preferredFilename = "picture.png"
+        let rich = NSMutableAttributedString(string: prefix)
+        rich.append(NSAttributedString(attachment: NSTextAttachment(fileWrapper: wrapper)))
+        rich.append(NSAttributedString(string: "图后"))
+        let data = try #require(rich.rtfd(from: NSRange(location: 0, length: rich.length), documentAttributes: [:]))
+        return (rich, data)
+    }
+
+    static func attachmentCount(_ rich: NSAttributedString) -> Int {
+        var count = 0
+        rich.enumerateAttribute(.attachment, in: NSRange(location: 0, length: rich.length)) { value, _, _ in
+            if value != nil { count += 1 }
+        }
+        return count
+    }
+
+    @Test func capturesFlatRTFD() {
+        #expect(CapturePolicy.allowedTypes.contains(ClipType.flatRTFD))
+        #expect(ClipClassifier.kind(of: [ClipItemSnapshot(representations: [rep(ClipType.flatRTFD, "x")])]) == .text)
+    }
+
+    @Test func prefersRTFDOverRTF() throws {
+        let (_, rtfd) = try Self.rtfdWithImage()
+        let rtf = try #require(NSAttributedString(string: "只有 RTF").rtf(from: NSRange(location: 0, length: 6), documentAttributes: [:]))
+        // 表示的先后与读取顺序无关。
+        let item = ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.rtf, data: rtf), ClipRepresentation(type: ClipType.flatRTFD, data: rtfd),
+        ])
+        let rich = try #require(RichText.decode(item))
+        #expect(Self.attachmentCount(rich) == 1)
+        #expect(rich.string.hasPrefix("图前"))
+    }
+
+    @Test func fallsBackWhenRTFDDoesNotDecode() throws {
+        let rtf = try #require(NSAttributedString(string: "RTF").rtf(from: NSRange(location: 0, length: 3), documentAttributes: [:]))
+        let item = ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.flatRTFD, data: Data("坏数据".utf8)), ClipRepresentation(type: ClipType.rtf, data: rtf),
+        ])
+        #expect(RichText.decode(item)?.string == "RTF")
+    }
+
+    @Test func previewKeepsAttachmentsAndReadsOldRTF() throws {
+        let (rich, _) = try Self.rtfdWithImage()
+        let withImage = try #require(RichText.encodePreview(rich))
+        #expect(!withImage.starts(with: Array("{\\rtf".utf8)))
+        let decoded = try #require(RichText.decodePreview(withImage))
+        #expect(Self.attachmentCount(decoded) == 1)
+        let attachment = try #require(decoded.attribute(.attachment, at: 2, effectiveRange: nil) as? NSTextAttachment)
+        #expect(attachment.fileWrapper?.regularFileContents.flatMap(NSImage.init(data:)) != nil)
+
+        // 没有附件时仍写普通 RTF；旧的 RTF 缓存照样能读。
+        let plain = NSAttributedString(string: "文字", attributes: [.foregroundColor: NSColor.red])
+        let rtf = try #require(RichText.encodePreview(plain))
+        #expect(rtf.starts(with: Array("{\\rtf".utf8)))
+        #expect(RichText.decodePreview(rtf)?.string == "文字")
+    }
+}
+
+@Suite struct HTMLFallbackTests {
+    @Test func sanitizeRemovesEverythingThatLoadsOrRuns() {
+        let html = """
+        <html><head><base href="https://evil.example/"><meta http-equiv="refresh" content="0;url=https://evil.example">
+        <link rel="stylesheet" href="https://evil.example/a.css"><script>alert(1)</script>
+        <style>@import url("https://evil.example/b.css"); .x { color: red; background: url(https://evil.example/bg.png) }</style></head>
+        <body background="https://evil.example/body.png"><p class="x" style="color:blue; background-image:url('https://evil.example/c.png')">文字 url(保留)</p>
+        <img src="https://evil.example/d.png" srcset="https://evil.example/e.png 2x"><iframe src="https://evil.example"></iframe>
+        <video poster="https://evil.example/p.png"><source src="https://evil.example/v.mp4"></video><object data="https://evil.example/o"></object>
+        </body></html>
+        """
+        let clean = RichText.sanitizedHTML(html)
+        #expect(!clean.contains("evil.example"))
+        #expect(!clean.lowercased().contains("<script"))
+        #expect(clean.contains("color: red") && clean.contains("color:blue"))
+        #expect(clean.contains("文字 url(保留)"))
+    }
+
+    @Test @MainActor func convertsHTMLWithStyles() throws {
+        let html = #"<p><span style="color:#FF0000; font-size:20px; background:#FFFF00"><b>红字</b></span>普通</p>"#
+        let rich = try #require(RichText.decodeHTML(Data(html.utf8)))
+        #expect(rich.string.hasPrefix("红字普通"))
+        let color = try #require((rich.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor)?.usingColorSpace(.deviceRGB))
+        #expect(color.redComponent > 0.9 && color.greenComponent < 0.1)
+        #expect(rich.attribute(.backgroundColor, at: 0, effectiveRange: nil) != nil)
+        let font = try #require(rich.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        #expect(font.fontDescriptor.symbolicTraits.contains(.bold))
+    }
+
+    @Test @MainActor func htmlOnlyWhenNoRTF() throws {
+        let rtf = try #require(NSAttributedString(string: "RTF").rtf(from: NSRange(location: 0, length: 3), documentAttributes: [:]))
+        let both = ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.html, data: Data("<p>HTML</p>".utf8)), ClipRepresentation(type: ClipType.rtf, data: rtf),
+        ])
+        #expect(RichText.decodeIncludingHTML(both)?.string == "RTF")
+        let htmlOnly = ClipItemSnapshot(representations: [ClipRepresentation(type: ClipType.html, data: Data("<p>HTML</p>".utf8))])
+        #expect(RichText.decodeIncludingHTML(htmlOnly)?.string.hasPrefix("HTML") == true)
+        // 入库路径（后台线程）不转 HTML。
+        #expect(RichText.decode(htmlOnly) == nil)
+    }
+
+    @Test @MainActor func oversizedHTMLIsNotConverted() {
+        let big = Data(("<p>" + String(repeating: "a", count: RichText.htmlLimit) + "</p>").utf8)
+        #expect(RichText.decodeHTML(big) == nil)
+    }
+}

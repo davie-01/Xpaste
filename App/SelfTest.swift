@@ -462,11 +462,12 @@ enum SelfTest {
             panel.hide()
             let sample = NSMutableAttributedString(string: "黑", attributes: [.foregroundColor: NSColor.black])
             sample.append(NSAttributedString(string: "红", attributes: [.foregroundColor: NSColor.systemRed]))
-            let prepared = RichTextDisplay.prepare(sample, font: .systemFont(ofSize: 13))
-            check("卡片按富文本显示：存了开头一段的富文本，写死的黑色改为跟随外观，彩色保留",
+            let prepared = RichTextDisplay.prepare(sample, font: .systemFont(ofSize: 13), keepsLinks: true)
+            check("卡片按富文本显示：存了开头一段的富文本，字色原样保留，深色字为主时整块底色是白色",
                   try store.summary(id: created.id)?.richPreview != nil
-                  && prepared.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .labelColor
-                  && prepared.attribute(.foregroundColor, at: 1, effectiveRange: nil) as? NSColor == .systemRed)
+                  && prepared.text.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor == .black
+                  && prepared.text.attribute(.foregroundColor, at: 1, effectiveRange: nil) as? NSColor == .systemRed
+                  && RichTextDisplay.isLight(prepared.darkBackdrop) && RichTextDisplay.isLight(prepared.lightBackdrop))
             // 一次复制 1 万个文件（N07）：卡片、辅助功能名称都按全部路径算，面板仍要很快出来。
             let manyFiles = try store.record(ClipSnapshot(items: (0..<10_000).map {
                 ClipItemSnapshot(representations: [ClipRepresentation(type: ClipType.fileURL, data: Data(URL(fileURLWithPath: "/tmp/xpaste-selftest-\($0).txt").absoluteString.utf8))])
@@ -1232,7 +1233,7 @@ enum SelfTest {
             // 3f3. 文本预览尺寸按排版量（原版 6.6.2）：短文本 390 × 316；长文本宽高各到屏幕一半为止
             let previewScreen = NSSize(width: 1800, height: 1169)
             func textPreview(_ text: String) -> NSSize {
-                PanelMetrics.previewSize(forContent: PanelMetrics.previewTextContentSize(PreviewContent.displayText(text, rich: nil), screenSize: previewScreen))
+                PanelMetrics.previewSize(forContent: PanelMetrics.previewTextContentSize(PreviewContent.displayText(text), screenSize: previewScreen))
             }
             // 量尺寸只取开头 2000 个码元：每行 75 个字（排开约 975 点，超过一半屏宽要折行），2000 字里约 26 行、折成 50 多行，高过屏幕一半。
             let longLine = String(repeating: "很长的一行文字", count: 11) + "结尾"
@@ -1243,6 +1244,208 @@ enum SelfTest {
             check("文本预览：短文本 390 × 316", textPreview("你好") == NSSize(width: 390, height: 316), "\(textPreview("你好"))")
             check("文本预览：长文本宽高都到屏幕一半为止（高 661，宽接近 910）", longSize.height == 661 && longSize.width > 880 && longSize.width <= 910, "\(longSize)")
             check("文本预览：行多但不宽的文本只增高", mediumSize.width == 390 && mediumSize.height > 316 && mediumSize.height < 661, "\(mediumSize)")
+
+            // 3f4. 每次打开预览都从头开始：滚动过、缩放过之后收起面板再打开、再按空格，回到开头（用户真机 2026-11-26）。
+            // 三种文本：小纯文本、超过 256 KB 走后台读取的大纯文本、带图片的富文本（RTFD）；再加一张图片。
+            do {
+                func hideFully() async {
+                    await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in panel.hide { done.resume() } }
+                }
+                func openPreviewOfFirst() async {
+                    panel.show()
+                    await panel.debugSettle()
+                    panel.debugSelect(index: 0)
+                    panel.debugPress(keyCode: 49, characters: " ")
+                    await panel.debugSettle()
+                    try? await Task.sleep(for: .milliseconds(300))
+                }
+                let lines = (1...3000).map { "第 \($0) 行，预览滚动位置测试" }.joined(separator: "\n")
+                let picture = NSImage(size: NSSize(width: 300, height: 200), flipped: false) { rect in NSColor.systemTeal.setFill(); rect.fill(); return true }
+                let png = picture.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) } ?? Data()
+                let wrapper = FileWrapper(regularFileWithContents: png)
+                wrapper.preferredFilename = "picture.png"
+                let richDoc = NSMutableAttributedString(string: "开头\n")
+                richDoc.append(NSAttributedString(attachment: NSTextAttachment(fileWrapper: wrapper)))
+                richDoc.append(NSAttributedString(string: "\n" + (1...800).map { "富文本第 \($0) 行" }.joined(separator: "\n")))
+                let rtfd = richDoc.rtfd(from: NSRange(location: 0, length: richDoc.length), documentAttributes: [:]) ?? Data()
+                // 本机排查用：XPASTE_SELFTEST_RTFD=<flat RTFD 文件> 时，把这份真实数据也按同样流程测一遍。
+                var extra: [(String, [ClipRepresentation])] = []
+                if let path = ProcessInfo.processInfo.environment["XPASTE_SELFTEST_RTFD"], let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                   let decoded = NSAttributedString(rtfd: data, documentAttributes: nil) {
+                    extra.append(("指定的 RTFD", [ClipRepresentation(type: ClipType.plainText, data: Data(decoded.string.utf8)), ClipRepresentation(type: ClipType.flatRTFD, data: data)]))
+                }
+                let cases: [(String, [ClipRepresentation])] = extra + [
+                    ("小纯文本", [ClipRepresentation(type: ClipType.plainText, data: Data(lines.utf8))]),
+                    ("超过 256 KB 的纯文本", [ClipRepresentation(type: ClipType.plainText, data: Data((lines + "\n" + String(repeating: "填充", count: 140_000)).utf8))]),
+                    ("带图片的富文本", [ClipRepresentation(type: ClipType.plainText, data: Data(richDoc.string.utf8)), ClipRepresentation(type: ClipType.flatRTFD, data: rtfd)]),
+                ]
+                for (name, reps) in cases {
+                    _ = try store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: reps)]))
+                    await openPreviewOfFirst()
+                    let first = panel.debugPreviewTextScrollY
+                    panel.debugScrollPreviewText(toY: 2000)
+                    let scrolled = panel.debugPreviewTextScrollY
+                    let scrolledKnob = panel.debugPreviewTextScrollerValue
+                    await hideFully()
+                    await openPreviewOfFirst()
+                    let reopened = panel.debugPreviewTextScrollY
+                    let knob = panel.debugPreviewTextScrollerValue
+                    check("预览从头开始：\(name)再打开时滚动条滑块也在最上面", knob.map { $0 <= 0.001 } == true, "滑块 \(knob.map { "\($0)" } ?? "nil")")
+                    check("预览从头开始：\(name)滚动后收起面板再打开，回到开头",
+                          first.map { $0 <= 0 } == true && scrolled.map { $0 > 1000 } == true && reopened.map { $0 <= 0 } == true,
+                          "滚动后滑块 \(scrolledKnob.map { "\($0)" } ?? "nil") 首次 \(first.map { "\($0)" } ?? "nil") 滚到 \(scrolled.map { "\($0)" } ?? "nil") 再开 \(reopened.map { "\($0)" } ?? "nil")")
+                    await hideFully()
+                }
+                let big = NSImage(size: NSSize(width: 1600, height: 1200), flipped: false) { rect in NSColor.systemOrange.setFill(); rect.fill(); return true }
+                if let tiff = big.tiffRepresentation, let bigPNG = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+                    _ = try store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [ClipRepresentation(type: ClipType.png, data: bigPNG)])]))
+                    await openPreviewOfFirst()
+                    panel.debugZoomPreviewImage(4)
+                    let zoomed = panel.debugPreviewImageZoom
+                    await hideFully()
+                    await openPreviewOfFirst()
+                    let reopened = panel.debugPreviewImageZoom
+                    check("预览从头开始：图片放大后收起面板再打开，缩放回到 1",
+                          zoomed.map { $0.magnification > 3 } == true && reopened.map { $0.magnification == 1 } == true,
+                          "放大 \(zoomed.map { "\($0)" } ?? "nil") 再开 \(reopened.map { "\($0)" } ?? "nil")")
+                    await hideFully()
+                }
+            }
+
+            // 3f5. 预览开着时用方向键往后走、越过屏幕边缘，列表要跟着滚，选中的卡片始终整张可见，浮层跟着它（用户真机 2026-11-27）。
+            do {
+                for i in 0..<30 {
+                    _ = try store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [ClipRepresentation(type: ClipType.plainText, data: Data("方向键滚动测试 \(i)".utf8))])]))
+                }
+                panel.show()
+                await panel.debugSettle()
+                panel.debugSelect(index: 0)
+                var plainTrace: [String] = []
+                for step in 1...8 {
+                    panel.debugPress(keyCode: 124)
+                    await panel.debugSettle()
+                    try? await Task.sleep(for: .milliseconds(80))
+                    let v = panel.debugSelectedCardVisibility
+                    plainTrace.append("\(step):\(v.map { "\($0.fullyVisible ? "见" : "外") \(Int($0.visibleX))/\(Int($0.cardX))" } ?? "nil")")
+                }
+                check("方向键越过屏幕边缘时列表跟着滚，选中的卡片整张可见", !plainTrace.contains { $0.contains("外") }, plainTrace.joined(separator: " "))
+                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in panel.hide { done.resume() } }
+                panel.show()
+                await panel.debugSettle()
+                panel.debugSelect(index: 0)
+                panel.debugPress(keyCode: 49, characters: " ")
+                await panel.debugSettle()
+                var trace: [String] = []
+                var allVisible = true
+                for step in 1...20 {
+                    panel.debugPress(keyCode: 124)
+                    await panel.debugSettle()
+                    try? await Task.sleep(for: .milliseconds(80))
+                    let v = panel.debugSelectedCardVisibility
+                    try? await Task.sleep(for: .milliseconds(250))
+                    let over = panel.debugPreviewOverSelectedCard
+                    if v?.fullyVisible != true || panel.debugPreviewClipID != panel.debugSelectedID || over != true { allVisible = false }
+                    trace.append("\(step):\(v.map { "\($0.fullyVisible ? "见" : "外") \(Int($0.visibleX))/\(Int($0.cardX))" } ?? "nil")\(panel.debugPreviewClipID == panel.debugSelectedID ? "" : " 浮层内容不对")\(over == true ? "" : " 浮层没跟上")")
+                }
+                check("预览开着时方向键越过屏幕边缘，列表跟着滚、浮层跟着选中", allVisible, trace.joined(separator: " "))
+                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in panel.hide { done.resume() } }
+            }
+
+            // 3f6. 方向键切换时列表带动画滚动（用户核对原版主程序，2026-11-27）：cubic-bezier(0.25, 0.1, 0.25, 1)，时长取距上次请求的间隔、上限 250 ms；
+            // 目标卡片完全在视口外时预览等滚完再切，露出一部分时边滚边切；被新请求顶替的旧回调不再打开上一条。
+            do {
+                let mid = PanelController.cubicBezier(0.5, 0.25, 0.1, 0.25, 1)
+                check("列表滚动缓动：cubic-bezier(0.25, 0.1, 0.25, 1) 在一半时约 0.802", abs(mid - 0.8024) < 0.002
+                      && PanelController.cubicBezier(0, 0.25, 0.1, 0.25, 1) == 0 && PanelController.cubicBezier(1, 0.25, 0.1, 0.25, 1) == 1, "\(mid)")
+                func hideFully() async { await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in panel.hide { done.resume() } } }
+                let scrollX = { panel.debugScrollView.contentView.bounds.minX }
+                // 选中卡片移到视口右缘外的下一张：返回下一张的序号。
+                func selectLastFullyVisible() async -> Int {
+                    panel.debugSelect(index: 0)
+                    var index = 0
+                    while let f = panel.debugCardFrame(index + 1), f.maxX <= panel.debugScrollView.contentView.bounds.maxX { index += 1 }
+                    panel.debugSelect(index: index)
+                    await panel.debugSettle()
+                    return index + 1
+                }
+                // ① 不开预览：越过右缘时逐帧滑过去，中间有过渡，最后整张可见。
+                panel.show()
+                await panel.debugSettle()
+                try? await Task.sleep(for: .milliseconds(300))
+                _ = await selectLastFullyVisible()
+                let start = scrollX()
+                panel.debugPress(keyCode: 124)
+                let afterPress = scrollX()
+                let duration = panel.debugCardScrollDuration
+                var samples: [CGFloat] = []
+                while panel.debugCardScrollAnimating { samples.append(scrollX()); try? await Task.sleep(for: .milliseconds(16)) }
+                let end = scrollX()
+                let between = samples.filter { $0 > start + 1 && $0 < end - 1 }
+                check("方向键越过屏幕边缘：列表逐帧滑过去（按下时还没动，中间有过渡，单调前进），最后整张可见",
+                      afterPress == start && end > start && between.count >= 3 && zip(samples, samples.dropFirst()).allSatisfy { $0 <= $1 }
+                      && duration.map { abs($0 - 0.25) < 0.001 } == true && panel.debugSelectedCardVisibility?.fullyVisible == true,
+                      "起 \(Int(start)) 止 \(Int(end)) 时长 \(duration.map { "\($0)" } ?? "nil") 中间 \(between.map { Int($0) })")
+                // ② 开着预览、目标完全在视口外：滚动期间浮层还是上一条，滚完才换成新的一条并跟着卡片。
+                // 视口右缘停在第 next 张左缘之前 2 点：它完全在视口外，前一张整张可见；在前一张上打开预览。
+                let next = 8
+                if let f = panel.debugCardFrame(next) { panel.debugSetCardScrollX(f.minX - 2 - panel.debugScrollView.contentView.bounds.width) }
+                panel.debugSelect(index: next - 1)
+                panel.debugPress(keyCode: 49, characters: " ")
+                await panel.debugSettle()
+                try? await Task.sleep(for: .milliseconds(300))
+                let before = panel.debugPreviewClipID
+                panel.debugPress(keyCode: 124)
+                let offscreen = panel.debugCardFrame(next).map { !panel.debugScrollView.contentView.bounds.intersects($0) } == true
+                try? await Task.sleep(for: .milliseconds(60))
+                let during = (panel.debugCardScrollAnimating, panel.debugPreviewClipID == before, panel.debugPreviewAwaitsScroll, panel.debugPreviewShown)
+                await panel.debugSettle()
+                try? await Task.sleep(for: .milliseconds(300))
+                check("预览开着、目标卡片在视口外：滚动期间浮层留着上一条，滚完换成新的一条、锚到新卡片",
+                      offscreen && during == (true, true, true, true) && panel.debugPreviewClipID == panel.debugSelectedID
+                      && panel.debugPreviewOverSelectedCard == true && !panel.debugPreviewAwaitsScroll,
+                      "在外 \(offscreen) 期间 \(during) 浮层对 \(panel.debugPreviewClipID == panel.debugSelectedID) 跟上 \(panel.debugPreviewOverSelectedCard.map { "\($0)" } ?? "nil")")
+                // ③ 目标卡片露出一部分：按下后马上切预览，边滚边跟。
+                if let f = panel.debugCardFrame(next + 1) {
+                    // 第 next + 1 张露出一半，选中的第 next 张仍整张可见（浮层不会因为卡片出屏而关掉）。
+                    panel.debugSetCardScrollX(f.minX + f.width / 2 - panel.debugScrollView.contentView.bounds.width)
+                    try? await Task.sleep(for: .milliseconds(300))
+                    panel.debugPress(keyCode: 124)
+                    let animating = panel.debugCardScrollAnimating
+                    let immediate = panel.debugPreviewClipID == panel.debugSelectedID
+                    await panel.debugSettle()
+                    try? await Task.sleep(for: .milliseconds(300))
+                    check("预览开着、目标卡片露出一部分：按下后马上切预览，列表照样滑过去，浮层跟到卡片上",
+                          animating && immediate && panel.debugPreviewClipID == panel.debugSelectedID && panel.debugPreviewOverSelectedCard == true
+                          && panel.debugSelectedCardVisibility?.fullyVisible == true,
+                          "滚动 \(animating) 立即切 \(immediate) 跟上 \(panel.debugPreviewOverSelectedCard.map { "\($0)" } ?? "nil")")
+                }
+                // ④ 连按：第二下顶替第一下的动画，时长变短；上一条的预览不会被打开，最后是最后选中的那一条。
+                // 第 target 张完全在视口外，在前一张上重新打开预览；第一下滚向 target，第二下滚向 target + 1。
+                panel.debugPress(keyCode: 53)
+                await panel.debugSettle()
+                try? await Task.sleep(for: .milliseconds(300))
+                let target = 16
+                if let f = panel.debugCardFrame(target) { panel.debugSetCardScrollX(f.minX - 2 - panel.debugScrollView.contentView.bounds.width) }
+                panel.debugSelect(index: target - 1)
+                panel.debugPress(keyCode: 49, characters: " ")
+                await panel.debugSettle()
+                try? await Task.sleep(for: .milliseconds(300))
+                panel.debugPress(keyCode: 124)
+                try? await Task.sleep(for: .milliseconds(40))
+                panel.debugPress(keyCode: 124)
+                let shortened = panel.debugCardScrollDuration
+                var seen = Set<String>()
+                while panel.debugCardScrollAnimating { if let id = panel.debugPreviewClipID { seen.insert("\(id)") }; try? await Task.sleep(for: .milliseconds(10)) }
+                await panel.debugSettle()
+                try? await Task.sleep(for: .milliseconds(300))
+                let firstID = panel.debugClipID(at: target).map { "\($0)" }
+                check("连按方向键：后一下顶替前一下的动画、时长变短，上一条的预览不打开，最后是最后选中的那条",
+                      shortened.map { $0 < 0.1 } == true && panel.debugPreviewClipID == panel.debugSelectedID
+                      && panel.debugClipID(at: target + 1) == panel.debugSelectedID && !(firstID.map(seen.contains) ?? false)
+                      && panel.debugPreviewOverSelectedCard == true,
+                      "时长 \(shortened.map { "\($0)" } ?? "nil") 期间浮层 \(seen) 第一下那条 \(firstID ?? "nil")")
+                await hideFully()
+            }
 
             // 3g. Stack：后复制的先粘，反转后先复制的先粘；长按不重复推进；粘完最后一项自动关闭
             let stackBoard = NSPasteboard(name: NSPasteboard.Name("xpaste-selftest-stack"))

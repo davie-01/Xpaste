@@ -559,6 +559,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch result {
             case .success(let summary):
                 self.panelController.historyDidChange()
+                self.fillRichPreviewFromHTML(summary, snapshot)
                 // Stack 开着时，这次复制同时排进队列。
                 self.stack?.collect(snapshot, summary: summary)
                 SoundEffects.shared.play(.copy)
@@ -712,9 +713,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
         panelController.historyDidChange()
+        fillRichPreviewFromHTML(summary, snapshot)
         if snapshot.kind == .image, let ocrIndexer { Task { await ocrIndexer.kick() } }
         if snapshot.kind == .link, let linkIndexer { Task { await linkIndexer.kick() } }
         return summary
+    }
+
+    /// 只有 HTML、没有 RTF 的文本（如 WPS）入库时生不成卡片缓存：在主线程把 HTML 转成富文本，补写缓存后刷新卡片。
+    /// 已有缓存的（有 RTF、RTFD，或之前补过）不动。同样内容再复制一次时，旧条目也会在这里补上。
+    private func fillRichPreviewFromHTML(_ summary: ClipSummary, _ snapshot: ClipSnapshot) {
+        guard summary.kind == .text, summary.richPreview == nil, let item = snapshot.items.first,
+              RichText.decode(item) == nil, let html = item.data(for: ClipType.html),
+              let rich = Log.measure("html-preview", { RichText.decodeHTML(html) }),
+              let data = HistoryStore.richPreviewData(from: rich) else { return }
+        let store = store!, id = summary.id
+        Task { [weak self] in
+            let filled = await Task.detached(priority: .utility) { (try? store.fillRichPreview(data, for: id)) ?? false }.value
+            if filled { self?.panelController.historyDidChange() }
+        }
     }
 
     /// 锁屏、切换用户（审查 10，用户决定）：期间暂停记录，收起面板和预览；回来自动恢复。Stack 保留。

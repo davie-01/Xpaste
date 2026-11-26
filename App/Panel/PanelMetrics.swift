@@ -80,20 +80,22 @@ enum PanelMetrics {
     static let previewMinContentSize = NSSize(width: 380, height: 240)
     /// 文本预览量尺寸时只取开头这么多 UTF-16 码元（原版 6.6.2 二进制核对，用户 2026-11-24）；正文仍可滚动看全。
     static let previewTextMeasureLimit = 2_000
-    /// 文本视图的内边距：左右各 8.5 加行片段自带的 5，上下各 10.5（见 `PreviewViewController` 的 `textContainerInset`）。
-    static let previewTextInsets = NSSize(width: (8.5 + 5) * 2, height: 10.5 * 2)
+    /// 量完排版后补上的宽高。文本视图的实际内边距是左右各 8.5 加行片段自带的 5、上下各 10.5（见 `PreviewViewController` 的
+    /// `textContainerInset`）；横向补 37 是原版 6.6.9 的做法（用户核对主程序，2026-11-26），比实际左右内边距多 10。
+    static let previewTextMeasurePadding = NSSize(width: 37, height: 10.5 * 2)
 
-    /// 文本预览的内容区尺寸（原版 6.6.2 的做法）：用 `boundingRect` 量开头一段的排版尺寸，所以最长的一行、换行和富文本字号都算数；
+    /// 文本预览的内容区尺寸（原版的做法）：用 `boundingRect` 量开头一段的排版尺寸，所以最长的一行、换行和富文本字号都算数；
+    /// 富文本量的是条目原始的富文本模型，不是显示副本（显示副本缩过图片、补过字体）；
     /// 加上文字内边距后，最小 380 × 240，宽、高最大各为屏幕的一半。短文本浮层 390 × 316，
     /// 长文本在 1800 × 1169 的屏幕上撑满约 910 × 661。
     static func previewTextContentSize(_ text: NSAttributedString, screenSize: NSSize) -> NSSize {
         let limit = NSSize(width: (screenSize.width / 2).rounded(.down), height: screenSize.height / 2)
         let sample = text.length > previewTextMeasureLimit
             ? text.attributedSubstring(from: NSRange(location: 0, length: previewTextMeasureLimit)) : text
-        let measured = sample.boundingRect(with: NSSize(width: limit.width - previewTextInsets.width, height: .greatestFiniteMagnitude),
-                                           options: [.usesLineFragmentOrigin, .usesFontLeading])
-        let width = ceil(measured.width) + previewTextInsets.width
-        let height = ceil(measured.height) + previewTextInsets.height
+        // 原版 6.6.9 直接把半屏宽、半屏高传给 boundingRect，量完才加内边距（用户核对主程序，2026-11-26）。
+        let measured = sample.boundingRect(with: limit, options: [.usesLineFragmentOrigin, .usesFontLeading])
+        let width = ceil(measured.width) + previewTextMeasurePadding.width
+        let height = ceil(measured.height) + previewTextMeasurePadding.height
         return NSSize(width: min(max(width, previewMinContentSize.width), limit.width),
                       height: min(max(height, previewMinContentSize.height), limit.height))
     }

@@ -825,6 +825,21 @@ public final class HistoryStore: Sendable {
     }
 
     /// 记下来源应用的图标，只在还没有时写入。
+    /// 补写卡片的富文本缓存：只有 HTML、没有 RTF 的文本条目（如 WPS），入库时生不成缓存，
+    /// 由主线程把 HTML 转好后再写进来（HTML 转换要用 WebKit，不能在入库的后台线程做）。
+    /// 只写还没有缓存的文本条目，不覆盖。返回是否写入。字符数不变，仍按纯文本算（用户决定）。
+    /// `data` 由 `richPreviewData(from:)` 生成。
+    @discardableResult
+    public func fillRichPreview(_ data: Data, for id: Int64) throws -> Bool {
+        try db.write { db in
+            try db.execute(sql: "UPDATE item SET richPreview = ? WHERE id = ? AND kind = 'text' AND richPreview IS NULL", arguments: [data, id])
+            return db.changesCount > 0
+        }
+    }
+
+    /// 卡片缓存的数据：开头 `richPreviewLimit` 个字符，有图片时写 RTFD，否则写 RTF。和入库时生成的一样。
+    public static func richPreviewData(from rich: NSAttributedString) -> Data? { Derived.richPreview(from: rich) }
+
     public func setAppIconIfMissing(bundleID: String, png: Data) throws {
         try db.write { db in
             try db.execute(sql: "UPDATE app SET icon = ? WHERE bundleID = ? AND icon IS NULL", arguments: [png, bundleID])
@@ -953,17 +968,19 @@ public final class HistoryStore: Sendable {
                 // 附件占位符 U+FFFC 不进摘要：单独显示没有意义，和中文一起截断时 CoreText 可能卡住（R05）。原文不动。
                 previewText = String(text.replacingOccurrences(of: "\u{FFFC}", with: "").prefix(HistoryStore.previewTextLimit))
                 searchText = String(text.prefix(HistoryStore.searchTextLimit))
-                if snapshot.kind == .text, let rtf = snapshot.items.first?.data(for: ClipType.rtf) {
-                    richPreview = Self.richPreview(from: rtf)
+                if snapshot.kind == .text, let rich = snapshot.items.first.flatMap(RichText.decode) {
+                    richPreview = Self.richPreview(from: rich)
+                    // 卡片的字符数：有富文本时按富文本的 UTF-16 长度（原版：百度那条 3,220，纯文本是 3,071）。
+                    charCount = rich.length
                 }
             }
         }
 
-        /// 卡片用的富文本：只留开头 `richPreviewLimit` 个字符，重新写成 RTF。
-        static func richPreview(from rtf: Data) -> Data? {
-            guard let rich = NSAttributedString(rtf: rtf, documentAttributes: nil), rich.length > 0 else { return nil }
+        /// 卡片用的富文本：只留开头 `richPreviewLimit` 个字符；开头有图片时写成 RTFD，否则写 RTF（`RichText.encodePreview`）。
+        static func richPreview(from rich: NSAttributedString) -> Data? {
+            guard rich.length > 0 else { return nil }
             let head = rich.attributedSubstring(from: NSRange(location: 0, length: min(rich.length, HistoryStore.richPreviewLimit)))
-            return head.rtf(from: NSRange(location: 0, length: head.length), documentAttributes: [:])
+            return RichText.encodePreview(head)
         }
 
         /// 先读尺寸再降采样，不把整张大图解码进内存。

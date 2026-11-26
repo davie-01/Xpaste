@@ -708,6 +708,9 @@ final class PanelController: NSObject {
         }
         filterPanel.close()
         preview.close()
+        // 列表滚动动画停在当前位置，挂着的预览不再打开。
+        stopCardScroll().forEach { $0(false) }
+        previewAwaitsScroll = false
         // 拖上缘途中被收起（比如按了热键）：收起后松手不会再送到这里，现在就按松手收尾，恢复窗口范围。
         resizeHandle.endDrag()
         edgeGlow.setLit(false, along: glassScreenFrame)
@@ -1666,7 +1669,7 @@ final class PanelController: NSObject {
         switch clip.kind {
         case .text where clip.byteCount > Self.inlineTextLimit:
             // 大段文字先在后台读出再打开编辑窗口。
-            loadText(of: clip) { [weak self] text, rich in
+            loadText(of: clip, rich: Self.editorRich) { [weak self] text, rich in
                 guard let self, self.isVisible else { return }
                 self.openEditor(rich.map { EditorContent.text($0, isRich: true) } ?? .text(NSAttributedString(string: text), isRich: false), for: clip)
             }
@@ -1852,16 +1855,42 @@ final class PanelController: NSObject {
         preview.isShown ? closePreview() : showPreview()
     }
 
-    private func showPreview() {
+    /// `animated`：选中切换（方向键）时列表带动画滚过去（原版如此）。
+    /// 卡片和视口已有交集时，启动滚动后马上切预览，浮层随滚动跟着卡片走；完全在视口外时，等动画成功完成
+    /// 再重新找卡片、锚定过去，动画被新的滚动请求顶替时不再打开这一条（用户核对原版主程序，2026-11-27）。
+    private func showPreview(animated: Bool = false) {
         guard renameField == nil, let index = selectedIndex else { return }
-        let path = IndexPath(item: index, section: 0)
+        let visible = animated && cardIntersectsViewport(index)
+        if animated, !visible {
+            let generation = previewGeneration
+            previewAwaitsScroll = true
+            scrollCardIntoView(index, animated: true) { [weak self] finished in
+                // 被新请求顶替（失败）时不打开这一条，由新请求接手。
+                guard let self, finished, self.previewGeneration == generation else { return }
+                self.previewAwaitsScroll = false
+                guard self.isVisible, self.preview.isShown else { return }
+                self.presentPreview()
+            }
+            return
+        }
+        previewAwaitsScroll = false
+        isSwitchingPreview = true
         // 卡片要完整露在屏幕里，浮层才有地方锚定。
-        collectionView.scrollToItems(at: [path], scrollPosition: .nearestVerticalEdge)
+        scrollCardIntoView(index, animated: animated)
+        isSwitchingPreview = false
+        presentPreview()
+    }
+
+    /// 按当前选中配好预览内容，锚定到选中的卡片（卡片已在视口里）。
+    private func presentPreview() {
+        guard renameField == nil, let index = selectedIndex else { return }
+        isSwitchingPreview = true
+        defer { isSwitchingPreview = false }
         guard let rect = previewAnchor(forItemAt: index) else { return }
         let clip = visibleClips[index]
         // 大段文字先在后台读出、解析好富文本再弹出（轻量化：不在主线程上读几 MB 的内容）；小的照旧立即显示。
         if clip.kind == .text, clip.byteCount > Self.inlineTextLimit {
-            loadText(of: clip) { [weak self] text, rich in
+            loadText(of: clip, rich: Self.previewRich) { [weak self] text, rich in
                 guard let self, self.isVisible, self.selectedID == clip.id, let index = self.selectedIndex,
                       let rect = self.previewAnchor(forItemAt: index) else { return }
                 self.preview.show(clip: clip, content: .text(text, rich: rich), relativeTo: rect, of: self.collectionView)
@@ -1876,6 +1905,9 @@ final class PanelController: NSObject {
     }
 
     private func closePreview() {
+        // 等着列表滚过去的预览作废。
+        previewGeneration += 1
+        previewAwaitsScroll = false
         guard preview.isShown else { return }
         preview.close()
         // 弹出框显示期间面板的第一响应者会被换掉，关掉后放回卡片区。
@@ -1890,8 +1922,26 @@ final class PanelController: NSObject {
     /// 选中项变了或列表刷新后，让已打开的预览跟过去。
     private func updatePreview() {
         guard preview.isShown else { return }
-        selectedIndex == nil ? closePreview() : showPreview()
+        guard selectedIndex != nil else { closePreview(); return }
+        previewGeneration += 1
+        // 连按方向键：队列里还有按键没处理时先不切，排到这些按键之后；期间选中又变了就作废，只做最后选中的那一条
+        // （用户分析，2026-11-27：切换时同步读库、解码、排版，连按会一条条做完才跟上）。
+        if NSApp.nextEvent(matching: .keyDown, until: .distantPast, inMode: .default, dequeue: false) != nil {
+            let generation = previewGeneration
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.previewGeneration == generation, self.preview.isShown, self.selectedIndex != nil else { return }
+                self.showPreview(animated: true)
+            }
+            return
+        }
+        showPreview(animated: true)
     }
+
+    private var previewGeneration = 0
+    /// 选中的卡片在视口外、预览等列表滚过去：期间浮层不跟着列表挪，也不因为卡片在屏幕外而关掉。
+    private var previewAwaitsScroll = false
+    /// 正在切换预览：期间列表滚动不去挪浮层，内容配好后由 `preview.show` 一次设好尺寸和锚点。
+    private var isSwitchingPreview = false
 
     /// 浮层箭头指向的矩形（集合视图坐标）：卡片本身，不含外侧的选中描边。按原版的浮层位置对出来的。
     private func previewAnchor(forItemAt index: Int) -> NSRect? {
@@ -1903,7 +1953,8 @@ final class PanelController: NSObject {
         switch clip.kind {
         case .text:
             let snapshot = try? store.snapshot(id: clip.id)
-            let rich = snapshot?.items.first?.data(for: ClipType.rtf).flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }
+            // 完整的富文本，按 flat-rtfd → rtfd → rtf 取（原版如此），网页正文里的图片在 RTFD 里。
+            let rich = snapshot?.items.first.flatMap(Self.previewRich)
             return .text(snapshot?.plainText ?? clip.previewText, rich: rich)
         case .color:
             let hex = clip.previewText.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -1946,19 +1997,33 @@ final class PanelController: NSObject {
     static let inlineTextLimit = 256 * 1024
     private var textLoadTask: Task<Void, Never>?
 
-    /// 后台读出完整文字和富文本，回到主线程交给 `done`。又发起了新的读取时旧的作废。
-    private func loadText(of clip: ClipSummary, _ done: @escaping (String, NSAttributedString?) -> Void) {
+    /// 空格预览的富文本模型：按 flat-rtfd → rtfd → rtf 解码完整内容，再清掉表格布局（原版 6.6.9 如此）。
+    /// 量尺寸和显示都用它；原始数据不变，粘贴仍用原始 RTFD。
+    /// 没有 RTF、RTFD 时转 HTML（XPaste 的增强，WPS 等只给 HTML 的来源也能看到样式；在主线程调用）。
+    private static func previewRich(_ item: ClipItemSnapshot) -> NSAttributedString? {
+        RichText.decodeIncludingHTML(item).map(RichTextDisplay.clearingTextBlocks)
+    }
+
+    /// 编辑器只认 `public.rtf`（多条合并、MCP 也是），不读 RTFD。
+    private static func editorRich(_ item: ClipItemSnapshot) -> NSAttributedString? {
+        item.data(for: ClipType.rtf).flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) }
+    }
+
+    /// 后台读出完整文字和第一个 item，回到主线程用 `rich` 解析富文本后交给 `done`。又发起了新的读取时旧的作废。
+    /// 预览传 `RichText.decode`（flat-rtfd → rtfd → rtf），编辑器传 `editorRich`。
+    private func loadText(of clip: ClipSummary, rich: @escaping (ClipItemSnapshot) -> NSAttributedString?,
+                          _ done: @escaping (String, NSAttributedString?) -> Void) {
         textLoadTask?.cancel()
         let store = store, id = clip.id, fallback = clip.previewText
         textLoadTask = Task { [weak self] in
-            let loaded = await Task.detached(priority: .userInitiated) { () -> (String, Data?) in
+            let loaded = await Task.detached(priority: .userInitiated) { () -> (String, ClipItemSnapshot?) in
                 let snapshot = try? store.snapshot(id: id)
-                return (snapshot?.plainText ?? fallback, snapshot?.items.first?.data(for: ClipType.rtf))
+                return (snapshot?.plainText ?? fallback, snapshot?.items.first)
             }.value
             guard !Task.isCancelled, let self else { return }
             self.textLoadTask = nil
             // 富文本在主线程上解析：NSAttributedString 的 RTF 导入用到 AppKit 的字体和颜色。
-            done(loaded.0, loaded.1.flatMap { NSAttributedString(rtf: $0, documentAttributes: nil) })
+            done(loaded.0, loaded.1.flatMap(rich))
         }
     }
 
@@ -1994,7 +2059,8 @@ final class PanelController: NSObject {
     }
 
     @objc private func cardsDidScroll() {
-        guard preview.isShown, let index = selectedIndex, let rect = previewAnchor(forItemAt: index) else { return }
+        // 预览在等列表滚到视口外的卡片：动画期间浮层留在原处（不挪、不因卡片在屏幕外而关掉），滚完再锚定。
+        guard preview.isShown, !isSwitchingPreview, !(previewAwaitsScroll && cardScroll != nil), let index = selectedIndex, let rect = previewAnchor(forItemAt: index) else { return }
         // 卡片滚出屏幕就没有可指的东西了。
         if collectionView.visibleRect.intersects(rect) {
             preview.move(to: rect)
@@ -2278,7 +2344,8 @@ final class PanelController: NSObject {
         return visibleClips.filter { selectedIDs.contains($0.id) }
     }
 
-    private func applySelection(scroll: Bool) {
+    /// `animated`：滚动带动画（方向键切换选中，原版如此）；其余情况直接到位。
+    private func applySelection(scroll: Bool, animated: Bool = false) {
         guard let index = selectedIndex else {
             collectionView.selectionIndexPaths = []
             return
@@ -2288,14 +2355,110 @@ final class PanelController: NSObject {
         // 直接整体替换。先 deselectAll 再选的话，不允许空选中时集合视图会留住原来的一条（描边留在旧卡片上），
         // 而且 deselectAll 会回调代理，把刚算好的选中又改掉。
         collectionView.selectionIndexPaths = all.union([path])
-        if scroll, index == 0 {
-            // 第一条前面还有提示卡片，回到第一条时滚回最左边，提示也露出来。
-            scrollView.contentView.scroll(to: .zero)
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-        } else if scroll {
-            collectionView.scrollToItems(at: [path], scrollPosition: .nearestVerticalEdge)
-            collectionView.animator().scrollToItems(at: [path], scrollPosition: .nearestVerticalEdge)
+        if scroll { scrollCardIntoView(index, animated: animated) }
+    }
+
+    // MARK: 列表滚动
+
+    /// 进行中的列表滚动动画。照原版：同一时间只有一段，新的请求顶替旧的，从当时的实际位置滚向新目标。
+    private struct CardScroll {
+        var from: CGFloat
+        var to: CGFloat
+        var start: CFTimeInterval
+        var duration: CFTimeInterval
+        /// 动画走完时以 true 调用，被新请求顶替或中途取消时以 false 调用。
+        var completions: [(Bool) -> Void]
+    }
+    private var cardScroll: CardScroll?
+    private var cardScrollLink: CADisplayLink?
+    /// 上一次滚动请求的时间：动画时长取距它的间隔，上限 250 ms，快速连按时动画随之变短（原版如此）。
+    private var lastCardScrollRequest: CFTimeInterval = 0
+    static let cardScrollMaxDuration: CFTimeInterval = 0.25
+
+    /// 第 `index` 张卡片和当前视口有没有交集（露出一部分也算）。
+    private func cardIntersectsViewport(_ index: Int) -> Bool {
+        guard let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return false }
+        return scrollView.contentView.bounds.intersects(frame)
+    }
+
+    /// 把第 `index` 张卡片整张滚进可见区域：右边露不全就往右滚到贴右边，左边露不全就往左滚到贴左边，已经整张可见就不动。
+    /// 第一条前面还有提示卡片，回到第一条时滚回最左边，提示也露出来。
+    /// `animated` 时按显示器刷新逐帧推进视口；不用动画或不用滚时直接到位，`completion(true)` 立即调用。
+    /// 不用 `NSCollectionView.scrollToItems`：实测它在这里不起作用（四种 scrollPosition、同步和 `animator()` 都不滚）。
+    private func scrollCardIntoView(_ index: Int, animated: Bool = false, completion: ((Bool) -> Void)? = nil) {
+        guard let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else {
+            completion?(true)
+            return
         }
+        let clip = scrollView.contentView
+        let visible = clip.bounds
+        var x = visible.minX
+        if index == 0 { x = 0 } else if frame.minX < visible.minX { x = frame.minX } else if frame.maxX > visible.maxX { x = frame.maxX - visible.width }
+        x = min(max(x, 0), max(0, collectionView.frame.width - visible.width))
+        let now = CACurrentMediaTime()
+        defer { lastCardScrollRequest = now }
+        // 正在滚向同一个目标（同一次按键里选中和预览各请求一次）：不重新起步，回调挂到这段动画上。
+        if var running = cardScroll, abs(running.to - x) < 0.5 {
+            if let completion { running.completions.append(completion) }
+            cardScroll = running
+            return
+        }
+        // 其余情况都顶替旧动画，旧的回调收到失败。
+        let replaced = stopCardScroll()
+        replaced.forEach { $0(false) }
+        guard abs(x - visible.minX) >= 0.5 else { completion?(true); return }
+        let duration = min(Self.cardScrollMaxDuration, now - lastCardScrollRequest)
+        guard animated, panel.isVisible, duration > 0, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            setCardScrollX(x)
+            completion?(true)
+            return
+        }
+        cardScroll = CardScroll(from: visible.minX, to: x, start: now, duration: duration, completions: completion.map { [$0] } ?? [])
+        let link = scrollView.displayLink(target: self, selector: #selector(cardScrollFrame(_:)))
+        link.add(to: .main, forMode: .common)
+        cardScrollLink = link
+    }
+
+    /// 每帧：进度 = (当前时间 − 开始时间) / 时长，限制在 0…1，经 cubic-bezier(0.25, 0.1, 0.25, 1) 缓动后插值，写进视口。
+    @objc private func cardScrollFrame(_ link: CADisplayLink) {
+        guard let scroll = cardScroll else { stopCardScroll().forEach { $0(false) }; return }
+        let progress = min(max((CACurrentMediaTime() - scroll.start) / scroll.duration, 0), 1)
+        let eased = Self.cubicBezier(progress, 0.25, 0.1, 0.25, 1)
+        setCardScrollX(scroll.from + (scroll.to - scroll.from) * eased)
+        if progress >= 1 { stopCardScroll().forEach { $0(true) } }
+    }
+
+    /// 停掉进行中的动画，交回它挂着的回调（由调用方决定按成功还是失败调用）。
+    @discardableResult
+    private func stopCardScroll() -> [(Bool) -> Void] {
+        cardScrollLink?.invalidate()
+        cardScrollLink = nil
+        let completions = cardScroll?.completions ?? []
+        cardScroll = nil
+        return completions
+    }
+
+    private func setCardScrollX(_ x: CGFloat) {
+        let clip = scrollView.contentView
+        clip.scroll(to: NSPoint(x: x, y: clip.bounds.minY))
+        scrollView.reflectScrolledClipView(clip)
+    }
+
+    /// CSS 的 cubic-bezier(x1, y1, x2, y2)：起点 (0,0)、终点 (1,1)，先按 x 解出曲线参数，再取 y。
+    static func cubicBezier(_ x: Double, _ x1: Double, _ y1: Double, _ x2: Double, _ y2: Double) -> Double {
+        guard x > 0 else { return 0 }
+        guard x < 1 else { return 1 }
+        func bezier(_ t: Double, _ p1: Double, _ p2: Double) -> Double {
+            let u = 1 - t
+            return 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t
+        }
+        // x(t) 在 [0, 1] 上单调递增（x1、x2 都在 0…1 内），二分求 t。
+        var low = 0.0, high = 1.0, t = x
+        for _ in 0..<40 {
+            t = (low + high) / 2
+            if bezier(t, x1, x2) < x { low = t } else { high = t }
+        }
+        return bezier(t, y1, y2)
     }
 
     /// ←/→ 移动选中；`extending`（按着 ⇧）时从扩选起点到当前位置之间的全部选中。
@@ -2314,7 +2477,7 @@ final class PanelController: NSObject {
             selectedID = visibleClips[next].id
             anchorID = selectedID
         }
-        applySelection(scroll: true)
+        applySelection(scroll: true, animated: true)
         announceSelection()
         loadMoreIfNeeded(near: next)
         updatePreview()
@@ -3175,6 +3338,11 @@ extension PanelController {
     var debugPreviewAwaitsImage: Bool { preview.awaitsImage }
     var debugPreviewShowsImage: Bool { preview.showsImage }
     var debugPreviewText: NSAttributedString? { preview.shownText }
+    var debugPreviewTextScrollY: CGFloat? { preview.debugTextScrollY }
+    var debugPreviewTextScrollerValue: Float? { preview.debugTextScrollerValue }
+    func debugScrollPreviewText(toY y: CGFloat) { preview.debugScrollText(toY: y) }
+    var debugPreviewImageZoom: (magnification: CGFloat, origin: NSPoint)? { preview.debugImageZoom }
+    func debugZoomPreviewImage(_ magnification: CGFloat) { preview.debugZoomImage(magnification) }
     /// 按住第 index 张卡片起拖时，拖放剪贴板上的内容：写进一个临时剪贴板再读出来，数据提供者会被真正调用。
     func debugDragPasteboard(at index: Int) -> [NSPasteboardItem] {
         let board = NSPasteboard(name: .init("com.mars.XPaste.selftest-drag-\(UUID().uuidString)"))
@@ -3265,13 +3433,36 @@ extension PanelController {
     }
     var debugQueryPending: Bool { queryTask != nil }
     var debugScrollView: NSScrollView { scrollView }
+    /// 自检用：浮层是否在选中卡片上方（卡片在屏幕上的水平中点落在浮层窗口的横向范围内）。
+    var debugPreviewOverSelectedCard: Bool? {
+        guard preview.isShown, let index = selectedIndex, let window = preview.window,
+              let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame,
+              let screen = collectionView.window?.convertToScreen(collectionView.convert(frame, to: nil)) else { return nil }
+        return window.frame.minX <= screen.midX && screen.midX <= window.frame.maxX
+    }
+    /// 自检用：选中卡片是否整张在列表的可见区域里，以及可见区域的横向位置。
+    var debugSelectedCardVisibility: (fullyVisible: Bool, visibleX: CGFloat, cardX: CGFloat)? {
+        guard let index = selectedIndex, let frame = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame else { return nil }
+        let visible = collectionView.visibleRect
+        return (visible.contains(frame), visible.minX, frame.minX)
+    }
     /// 等后台列表查询和分页加载都结束。自检在读取列表前调用。
     func debugSettle() async {
         while let task = queryTask { await task.value }
         while let task = previewImageTask { await task.value }
         while let task = textLoadTask { await task.value }
         while loadingMore { try? await Task.sleep(for: .milliseconds(5)) }
+        while cardScroll != nil { try? await Task.sleep(for: .milliseconds(5)) }
     }
+    /// 自检用：第 index 张卡片的布局位置、把视口直接放到 x。
+    func debugCardFrame(_ index: Int) -> NSRect? { collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0))?.frame }
+    func debugSetCardScrollX(_ x: CGFloat) { setCardScrollX(x) }
+    var debugCardScrollDuration: CFTimeInterval? { cardScroll?.duration }
+    /// 自检用：列表滚动动画是否在进行、预览是否在等列表滚过去。
+    var debugCardScrollAnimating: Bool { cardScroll != nil }
+    var debugPreviewAwaitsScroll: Bool { previewAwaitsScroll }
+    var debugPreviewShown: Bool { preview.isShown }
+    func debugClipID(at index: Int) -> ClipSummary.ID? { visibleClips.indices.contains(index) ? visibleClips[index].id : nil }
     func debugBeginComposition(_ text: String) -> Bool {
         focusSearch()
         guard let editor = searchField.currentEditor() as? NSTextView else { return false }

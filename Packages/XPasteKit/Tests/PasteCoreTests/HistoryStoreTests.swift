@@ -113,6 +113,58 @@ private let t0 = Date(timeIntervalSinceReferenceDate: 800_000_000)
         #expect(plain.richPreview == nil)
     }
 
+    @Test func fillsRichPreviewForHTMLOnlyText() throws {
+        let temp = try TempStore()
+        let htmlOnly = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.plainText, data: Data("WPS 文字".utf8)),
+            ClipRepresentation(type: ClipType.html, data: Data("<p>WPS 文字</p>".utf8)),
+        ])]), now: t0)
+        // 入库时不转 HTML，没有卡片缓存；字符数按纯文本。
+        #expect(htmlOnly.richPreview == nil && htmlOnly.charCount == "WPS 文字".utf16.count)
+        let rich = NSAttributedString(string: "WPS 文字", attributes: [.foregroundColor: NSColor.red])
+        let data = try #require(HistoryStore.richPreviewData(from: rich))
+        #expect(try temp.store.fillRichPreview(data, for: htmlOnly.id))
+        let filled = try #require(try temp.store.summary(id: htmlOnly.id))
+        #expect(filled.richPreview.flatMap(RichText.decodePreview)?.string == "WPS 文字")
+        #expect(filled.charCount == "WPS 文字".utf16.count)
+        // 已有缓存的不覆盖；非文本条目不写。
+        let other = try #require(HistoryStore.richPreviewData(from: NSAttributedString(string: "别的")))
+        #expect(try !temp.store.fillRichPreview(other, for: htmlOnly.id))
+        let link = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.plainText, data: Data("https://example.com".utf8)),
+        ])]), now: t0)
+        #expect(try !temp.store.fillRichPreview(other, for: link.id))
+    }
+
+    @Test func cardCacheKeepsImagesFromRTFD() throws {
+        let temp = try TempStore()
+        let image = NSImage(size: NSSize(width: 4, height: 2), flipped: false) { rect in NSColor.red.setFill(); rect.fill(); return true }
+        let png = try #require(image.tiffRepresentation.flatMap { NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) })
+        let wrapper = FileWrapper(regularFileWithContents: png)
+        wrapper.preferredFilename = "picture.png"
+        let rich = NSMutableAttributedString(string: "图前")
+        rich.append(NSAttributedString(attachment: NSTextAttachment(fileWrapper: wrapper)))
+        rich.append(NSAttributedString(string: "图后"))
+        let range = NSRange(location: 0, length: rich.length)
+        let rtfd = try #require(rich.rtfd(from: range, documentAttributes: [:]))
+        let rtf = try #require(rich.rtf(from: range, documentAttributes: [:]))
+        // Safari 同时写 RTF 和 RTFD：卡片缓存按 RTFD 取，图片还在。
+        let summary = try temp.store.record(ClipSnapshot(items: [ClipItemSnapshot(representations: [
+            ClipRepresentation(type: ClipType.plainText, data: Data("图前图后".utf8)),
+            ClipRepresentation(type: ClipType.rtf, data: rtf),
+            ClipRepresentation(type: ClipType.flatRTFD, data: rtfd),
+        ])]), now: t0)
+        let head = try #require(summary.richPreview.flatMap(RichText.decodePreview))
+        var attachments = 0
+        head.enumerateAttribute(.attachment, in: NSRange(location: 0, length: head.length)) { value, _, _ in
+            if value != nil { attachments += 1 }
+        }
+        #expect(attachments == 1)
+        #expect(head.string.hasPrefix("图前"))
+        // 卡片字符数按富文本的 UTF-16 长度：附件占一个字符（原版如此），纯文本里没有它。
+        #expect(summary.charCount == rich.length && summary.charCount == "图前图后".utf16.count + 1)
+    }
+
     @Test func recordsFileSizeAtCopyTimeExcludingDirectories() throws {
         let temp = try TempStore()
         let folder = temp.directory.appendingPathComponent("files", isDirectory: true)

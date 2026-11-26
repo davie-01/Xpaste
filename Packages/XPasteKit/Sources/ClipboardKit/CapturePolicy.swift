@@ -28,8 +28,9 @@ public struct CapturePolicy: Sendable, Equatable {
     ]
 
     /// 只读取这些表示；WebArchive、dyn.* 和应用私有格式一律不碰。
+    /// flat-rtfd 带着网页正文里的图片，卡片和预览按它显示图片（原版如此）。
     public static let allowedTypes: [String] = [
-        ClipType.plainText, ClipType.rtf, ClipType.html,
+        ClipType.plainText, ClipType.rtf, ClipType.flatRTFD, ClipType.html,
         ClipType.url, ClipType.fileURL, ClipType.png, ClipType.tiff,
     ]
 

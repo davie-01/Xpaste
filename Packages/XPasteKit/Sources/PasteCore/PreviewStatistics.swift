@@ -8,8 +8,9 @@ public struct TextStatistics: Sendable, Equatable {
     public let words: Int
     public let lines: Int
 
-    public init(_ text: String) {
-        characters = text.utf16.count
+    /// `countsCharacters`：字符数按字符个数（字形簇）算。原版富文本预览的底栏这样算；纯文本仍是 UTF-16 码元数。
+    public init(_ text: String, countsCharacters: Bool = false) {
+        characters = countsCharacters ? text.count : text.utf16.count
         words = text.split(separator: " ", omittingEmptySubsequences: true).count
         lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).count
     }

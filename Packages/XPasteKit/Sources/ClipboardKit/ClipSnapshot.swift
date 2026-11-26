@@ -108,6 +108,9 @@ public struct ClipSnapshot: Sendable, Identifiable, Equatable {
 public enum ClipType {
     public static let plainText = "public.utf8-plain-text"
     public static let rtf = "public.rtf"
+    /// Safari、文本编辑等写的带附件富文本（单个数据块形式），网页正文里的图片在这里面。
+    public static let flatRTFD = "com.apple.flat-rtfd"
+    public static let rtfd = "com.apple.rtfd"
     public static let html = "public.html"
     public static let url = "public.url"
     public static let fileURL = "public.file-url"
@@ -131,7 +134,7 @@ public enum ClipClassifier {
         }
         if types.contains(ClipType.url) { return .link }
         if types.contains(ClipType.png) || types.contains(ClipType.tiff) { return .image }
-        if types.contains(ClipType.rtf) || types.contains(ClipType.html) { return .text }
+        if types.contains(ClipType.rtf) || types.contains(ClipType.flatRTFD) || types.contains(ClipType.html) { return .text }
         return .unknown
     }
 

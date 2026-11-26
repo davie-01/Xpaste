@@ -16,7 +16,7 @@ final class ClipCardItem: NSCollectionViewItem {
     private var isEditingTitle = false { didSet { view.needsLayout = true } }
     private let timeLabel = NSTextField(labelWithString: "")
     private let appIcon = NSImageView()
-    private let bodyLabel = NSTextField(wrappingLabelWithString: "")
+    private let bodyLabel = CardBodyLabel(wrappingLabelWithString: "")
     private let bodyImage = NSImageView()
     /// 图片卡片正文区的棋盘格衬底。
     private let checkerboard = CardCheckerboardView()
@@ -28,6 +28,8 @@ final class ClipCardItem: NSCollectionViewItem {
 
     /// 卡片底色；颜色类型用色值本身，其余为 nil 表示跟随外观。
     private var fillColor: NSColor?
+    /// 带富文本的文本卡片：整块正文的底色和文字外观随它（原版的规则，见 `RichTextDisplay.prepare`）。
+    private var richBackdrop: RichTextDisplay.Prepared?
     private var kind: ClipKind = .text
     var isCompact = false { didSet { if isCompact != oldValue { view.needsLayout = true } } }
 
@@ -56,8 +58,7 @@ final class ClipCardItem: NSCollectionViewItem {
         bodyLabel.textColor = .labelColor
         // 换行标签默认可选中文字，会抢走点击并弹出系统的文本菜单；卡片上的文字只用于展示。
         bodyLabel.isSelectable = false
-        bodyLabel.lineBreakMode = .byTruncatingTail
-        bodyLabel.cell?.truncatesLastVisibleLine = true
+        bodyLabel.wantsLayer = true
         bodyImage.imageScaling = .scaleProportionallyDown
 
         footerBadge.wantsLayer = true
@@ -140,15 +141,24 @@ final class ClipCardItem: NSCollectionViewItem {
     override func viewDidLayout() {
         super.viewDidLayout()
         layoutCard()
+        applyTextAppearance()
         // 动态颜色需要在当前外观下解析。
         view.effectiveAppearance.performAsCurrentDrawingAppearance {
-            card.layer?.backgroundColor = (fillColor ?? PanelMetrics.contentBackgroundColor).cgColor
+            let backdrop = richBackdrop?.backdrop(for: view.effectiveAppearance)
+            card.layer?.backgroundColor = (backdrop ?? fillColor ?? PanelMetrics.contentBackgroundColor).cgColor
             card.layer?.borderColor = NSColor.separatorColor.cgColor
             // 重命名期间选中框是灰色（原版如此）。
             view.layer?.borderColor = (isEditingTitle ? NSColor.systemGray : NSColor.controlAccentColor).cgColor
             // 图片尺寸的小标签：深色是半透明黑底白字，浅色是浅灰底灰字（原版截图取的 #EAEBEA、#868686）。
             footerBadge.layer?.backgroundColor = (isDark ? NSColor.black.withAlphaComponent(0.45) : NSColor(white: 0xEA / 255.0, alpha: 1)).cgColor
         }
+    }
+
+    /// 正文区的文字（正文和字符数）按整块底色的深浅选外观；系统外观切换时卡片会重新布局，这里跟着换。
+    private func applyTextAppearance() {
+        let appearance = richBackdrop?.textAppearance(for: view.effectiveAppearance)
+        bodyLabel.appearance = appearance
+        footerLabel.appearance = appearance
     }
 
     private var isDark: Bool { view.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
@@ -235,8 +245,41 @@ final class ClipCardItem: NSCollectionViewItem {
         case .text, .unknown:
             let top = areaHeight - (isCompact ? 8 : 6)
             bodyLabel.frame = NSRect(x: pad, y: footerSpace, width: side - pad * 2, height: max(0, top - footerSpace))
-            bodyLabel.maximumNumberOfLines = max(1, Int((top - footerSpace) / 17))
         }
+        layoutBodyOverflow()
+    }
+
+    /// 正文渐隐的高度（从 Paste 卡片截图估的，待真机核对）。
+    static let bodyFadeHeight: CGFloat = 24
+    private let bodyFade = CAGradientLayer()
+
+    /// 文本卡片超出部分照原版渐隐（调研 08：文本卡片“超出渐隐”）：只画放得下的整行，正文区底部一段渐隐。
+    /// 不再做末行省略号截断：`NSTextField` 截断含图片附件的行时会把图片画坏（画成两倍宽，应用里是一块白框）。
+    /// 颜色卡片仍是单行居中、放不下时截断。
+    private func layoutBodyOverflow() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard kind == .text || kind == .unknown else {
+            bodyLabel.lineBreakMode = .byTruncatingTail
+            bodyLabel.cell?.truncatesLastVisibleLine = true
+            bodyLabel.maximumNumberOfLines = 1
+            bodyLabel.layer?.mask = nil
+            return
+        }
+        bodyLabel.lineBreakMode = .byWordWrapping
+        bodyLabel.cell?.truncatesLastVisibleLine = false
+        bodyLabel.maximumNumberOfLines = 0
+        let height = max(1, bodyLabel.bounds.height)
+        let fade = min(1, Self.bodyFadeHeight / height)
+        bodyFade.frame = bodyLabel.bounds
+        bodyFade.colors = [NSColor.clear.cgColor, NSColor.black.cgColor, NSColor.black.cgColor]
+        bodyFade.locations = [0, NSNumber(value: Double(fade)), 1]
+        // 渐变的单位坐标跟着图层的几何方向走：图层上下翻转时 y = 0 在上边。
+        let flipped = bodyLabel.layer?.isGeometryFlipped ?? false
+        bodyFade.startPoint = CGPoint(x: 0.5, y: flipped ? 1 : 0)
+        bodyFade.endPoint = CGPoint(x: 0.5, y: flipped ? 0 : 1)
+        bodyLabel.layer?.mask = bodyFade
     }
 
     /// `pinboardColor`：条目固定在某个 Pinboard 时那个 Pinboard 的颜色；`inPinboard`：正在看的是 Pinboard 而不是历史。
@@ -278,6 +321,8 @@ final class ClipCardItem: NSCollectionViewItem {
         bodyLabel.font = .systemFont(ofSize: 13)
         bodyLabel.textColor = .labelColor
         fillColor = nil
+        richBackdrop = nil
+        bodyLabel.vibrancyAllowed = true
         footerLabel.alignment = .center
         footerLabel.lineBreakMode = .byTruncatingMiddle
         footerLabel.cell?.wraps = false
@@ -347,10 +392,14 @@ final class ClipCardItem: NSCollectionViewItem {
             footerLabel.lineBreakMode = .byTruncatingTail
             footerLabel.stringValue = text.replacingOccurrences(of: #"^https?://(www\.)?"#, with: "", options: .regularExpression)
         case .text, .unknown:
-            // 卡片只排版开头一小段，避免超长文本拖慢布局；字符数是全文的（UTF-16 码元，与原版一致）。
-            // 带 RTF 的文本按富文本显示（原版如此，L98）。
-            if let data = clip.richPreview, let rich = NSAttributedString(rtf: data, documentAttributes: nil) {
-                bodyLabel.attributedStringValue = RichTextDisplay.prepare(rich, font: .systemFont(ofSize: 13))
+            // 卡片只排版开头一小段，避免超长文本拖慢布局；字符数是全文的（UTF-16 码元；有富文本时按富文本，与原版一致）。
+            // 带富文本的按富文本显示（原版如此，L98）。缓存可能是 RTF，也可能是带图片的 RTFD（开头有图片时）。
+            // 图片不缩放、链接保留（原版卡片如此）：比正文区高的图片那一行放不下，就不画。
+            if let data = clip.richPreview, let rich = RichText.decodePreview(data) {
+                let prepared = RichTextDisplay.prepare(rich, font: .systemFont(ofSize: 13), keepsLinks: true)
+                richBackdrop = prepared
+                bodyLabel.vibrancyAllowed = false
+                bodyLabel.attributedStringValue = prepared.text
             } else {
                 bodyLabel.stringValue = String(clip.previewText.prefix(600))
             }
@@ -461,6 +510,15 @@ final class ClipCardItem: NSCollectionViewItem {
 
 /// 图片卡片的衬底：8 pt 的深浅方格，等比缩放留出的边和图片的透明区域都显示它（Docs/归档/调研/08 第 5.3 节，L18）。预览里的是半透明的，见 `CheckerboardView`。
 /// 两种颜色都是从原版截图里取的：深色 #282828 / #363636，浅色 #FFFFFF / #F4F4F4。
+/// 卡片正文。富文本卡片要关掉活力效果：面板在玻璃里，允许活力效果时系统按活力混合画整个标签，
+/// 深色卡片上的图片附件会被画成一块纯白（在玻璃窗口里实测复现，关掉后颜色正常）。纯文本卡片照旧。
+final class CardBodyLabel: NSTextField {
+    var vibrancyAllowed = true {
+        didSet { if vibrancyAllowed != oldValue { needsDisplay = true } }
+    }
+    override var allowsVibrancy: Bool { vibrancyAllowed && super.allowsVibrancy }
+}
+
 final class CardCheckerboardView: NSView {
     private static let square: CGFloat = 8
 

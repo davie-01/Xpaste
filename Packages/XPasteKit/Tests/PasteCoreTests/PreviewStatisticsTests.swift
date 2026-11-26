@@ -14,6 +14,14 @@ import Testing
         #expect(counts("XPaste 基准采集用的文本条目，第二行\n第三行") == [25, 2, 2])
     }
 
+    /// 富文本预览的字符数按字符个数：组合字符、表情算一个，UTF-16 码元数会更多（原版百度那条 3,212 对 3,220）。
+    @Test func richTextCountsCharacters() {
+        let text = "e\u{301}👍🏽\n图\u{FFFC}"
+        #expect(TextStatistics(text).characters == text.utf16.count)
+        let rich = TextStatistics(text, countsCharacters: true)
+        #expect(rich.characters == 5 && rich.lines == 2)
+    }
+
     @Test func textCountsEdgeCases() {
         #expect(counts("") == [0, 0, 1])
         #expect(counts("a  b ") == [5, 2, 1])
