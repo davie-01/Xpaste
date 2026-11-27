@@ -133,11 +133,12 @@ public final class HistoryStore: Sendable {
             try db.execute(sql: "ALTER TABLE app ADD COLUMN icon BLOB")
         }
         migrator.registerMigration("v8-rich-refresh") { db in
-            // richState：0 待按 1.0.6 的规则重算卡片富文本和字符数，1 已处理。只对文本条目有意义（L178、L179）。
-            // 新条目入库时已按新规则算好，所以默认 1；之前的文本条目全部置 0，由应用在后台逐条补。
+            // richState：0 卡片缓存待补写，1 已处理。只对文本条目有意义（L179）：只有 HTML 的条目入库时标 0，
+            // 由应用在主线程转换 HTML 后补写（HTML 转换要用 WebKit，入库的后台线程做不了）；其余入库时已算好，标 1。
+            // 1.0.7 时这里还把已有的文本条目全部置 0、按新规则重算；只有用户自己的库用过，都已跑完，
+            // 2026-11-28 去掉了这一句（用户决定）。已执行过的库不受影响，没执行过的旧库里的条目不再重算。
             try db.execute(sql: """
                 ALTER TABLE item ADD COLUMN richState INTEGER NOT NULL DEFAULT 1;
-                UPDATE item SET richState = 0 WHERE kind = 'text';
                 CREATE INDEX item_on_rich_pending ON item(id) WHERE kind = 'text' AND richState = 0;
                 """)
         }
@@ -223,12 +224,12 @@ public final class HistoryStore: Sendable {
         }
         try db.execute(sql: """
             INSERT INTO item (uuid, checksum, kind, previewText, thumbnail, pixelWidth, pixelHeight,
-                              charCount, byteCount, timestamp, createdAt, updatedAt, appID, fileBytes, richPreview)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                              charCount, byteCount, timestamp, createdAt, updatedAt, appID, fileBytes, richPreview, richState)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [
                 snapshot.id.uuidString, snapshot.fingerprint, snapshot.kind.rawValue, derived.previewText,
                 derived.thumbnail, derived.pixelWidth, derived.pixelHeight, derived.charCount,
-                snapshot.byteCount, now, now, now, appID, derived.fileBytes, derived.richPreview,
+                snapshot.byteCount, now, now, now, appID, derived.fileBytes, derived.richPreview, derived.richState,
             ])
         let id = db.lastInsertedRowID
         try db.execute(sql: "INSERT INTO item_data (itemID, payload) VALUES (?, ?)", arguments: [id, prepared.payload])
@@ -313,11 +314,11 @@ public final class HistoryStore: Sendable {
                 // 内容换了，识别结果和链接信息都作废，重新排队。
                 try db.execute(sql: """
                     UPDATE item SET checksum = ?, kind = ?, previewText = ?, thumbnail = ?, pixelWidth = ?, pixelHeight = ?,
-                                    charCount = ?, byteCount = ?, updatedAt = ?, richPreview = ?, richState = 1,
+                                    charCount = ?, byteCount = ?, updatedAt = ?, richPreview = ?, richState = ?,
                                     ocrText = NULL, ocrState = 0, linkTitle = NULL, linkImageKind = 0, linkState = 0
                     WHERE id = ?
                     """, arguments: [checksum, snapshot.kind.rawValue, derived.previewText, derived.thumbnail, derived.pixelWidth,
-                                     derived.pixelHeight, derived.charCount, snapshot.byteCount, now, derived.richPreview, id])
+                                     derived.pixelHeight, derived.charCount, snapshot.byteCount, now, derived.richPreview, derived.richState, id])
                 try db.execute(sql: "UPDATE item_data SET payload = ? WHERE itemID = ?", arguments: [payload, id])
                 for name in assetNames {
                     try db.execute(sql: "INSERT INTO item_asset (name, itemID) VALUES (?, ?)", arguments: [name, id])
@@ -337,75 +338,70 @@ public final class HistoryStore: Sendable {
         return try summary(id: id)
     }
 
-    // MARK: 旧文本条目按新规则重算（v8-rich-refresh）
+    // MARK: 只有 HTML 的文本条目补写卡片缓存（v8-rich-refresh）
 
-    /// 最新的一条还没按新规则重算过的文本条目。
-    public func nextTextAwaitingRichRefresh() throws -> OCRJob? {
+    /// 一条待补写的文本条目。`checksum` 用来认出处理期间内容被换掉（同一条被编辑、重新复制）的情况。
+    public struct RichRefreshJob: Sendable, Equatable {
+        public let id: Int64
+        public let uuid: String
+        public let checksum: String
+    }
+
+    /// 最新的一条待补写的文本条目（只有 HTML、入库时没能生成卡片缓存的）。
+    public func nextTextAwaitingRichRefresh() throws -> RichRefreshJob? {
         try db.read { db in
-            try Row.fetchOne(db, sql: "SELECT id, uuid FROM item WHERE kind = 'text' AND richState = 0 ORDER BY id DESC LIMIT 1")
-                .map { OCRJob(id: $0["id"], uuid: $0["uuid"]) }
+            try Row.fetchOne(db, sql: "SELECT id, uuid, checksum FROM item WHERE kind = 'text' AND richState = 0 ORDER BY id DESC LIMIT 1")
+                .map { RichRefreshJob(id: $0["id"], uuid: $0["uuid"], checksum: $0["checksum"]) }
         }
     }
 
     public enum RichRefreshStep: Sendable, Equatable {
-        /// 已处理完；`changed` 为 true 表示卡片缓存或字符数有变化，面板要刷新。
-        case done(changed: Bool)
+        /// 已处理完，没有要写的（已有缓存、没有 HTML、数据读不出来）。
+        case done
         /// 只有 HTML、还没有卡片缓存：要在主线程转换（WebKit），再用 `finishRichRefresh` 写入。
         case needsHTML(Data)
     }
 
-    /// 按入库时的规则重算一条旧文本条目（可在后台调用）：
-    /// - 有 flat-rtfd、rtfd、rtf 的：卡片缓存按 `RichText.decode` 重新生成，字符数按富文本的 UTF-16 长度（L178）；
-    /// - 只有 HTML、还没有卡片缓存的：交回 HTML，由主线程转换后写入（L179），字符数仍按纯文本（用户决定）；
-    /// - 其余（纯文本、数据读不出来）：只标记已处理。
-    /// 条目在处理期间被删、或被同样内容的再次复制更新过（那时已按新规则算好）时什么都不写。
-    public func refreshRich(_ job: OCRJob) throws -> RichRefreshStep {
-        // 读出的快照和条目是否还是同一条，由下面写入时的 `uuid = ?` 条件保证。
+    /// 取出待补写条目的 HTML（可在后台调用）：只有 HTML、还没有卡片缓存的交回 HTML，由主线程转换后用
+    /// `finishRichRefresh` 写入，字符数仍按纯文本（用户决定）；其余只标记已处理。
+    /// 写入都带 `uuid`、`checksum` 和 `richState = 0` 条件：处理期间条目被删、内容被换掉时什么都不写。
+    public func refreshRich(_ job: RichRefreshJob) throws -> RichRefreshStep {
+        // 读出的快照和条目是否还是同一条、内容有没有换过，由写入时的条件保证。
         guard let snapshot = try snapshot(id: job.id), let item = snapshot.items.first else {
             try markRichRefreshed(job)
-            return .done(changed: false)
-        }
-        if let rich = RichText.decode(item) {
-            let preview = Derived.richPreview(from: rich)
-            return try db.write { db in
-                let old = try Row.fetchOne(db, sql: "SELECT richPreview, charCount FROM item WHERE id = ? AND uuid = ? AND richState = 0",
-                                           arguments: [job.id, job.uuid])
-                guard let old else { return .done(changed: false) }
-                try db.execute(sql: "UPDATE item SET richPreview = ?, charCount = ?, richState = 1 WHERE id = ?",
-                               arguments: [preview, rich.length, job.id])
-                let oldPreview: Data? = old["richPreview"]
-                let oldCount: Int = old["charCount"]
-                return .done(changed: oldPreview != preview || oldCount != rich.length)
-            }
+            return .done
         }
         let hasPreview = try db.read { db in
             try Bool.fetchOne(db, sql: "SELECT richPreview IS NOT NULL FROM item WHERE id = ?", arguments: [job.id]) ?? true
         }
-        if !hasPreview, let html = item.data(for: ClipType.html) { return .needsHTML(html) }
+        if !hasPreview, RichText.decode(item) == nil, let html = item.data(for: ClipType.html) { return .needsHTML(html) }
         try markRichRefreshed(job)
-        return .done(changed: false)
+        return .done
     }
 
     /// 写入主线程从 HTML 转好的卡片缓存（`data` 由 `richPreviewData(from:)` 生成，转换失败传 nil）并标记已处理。
     /// 只在还没有缓存时写，不覆盖。返回是否写入了缓存。
     @discardableResult
-    public func finishRichRefresh(_ job: OCRJob, richPreview data: Data?) throws -> Bool {
+    public func finishRichRefresh(_ job: RichRefreshJob, richPreview data: Data?) throws -> Bool {
         try db.write { db in
             var filled = false
             if let data {
-                try db.execute(sql: "UPDATE item SET richPreview = ? WHERE id = ? AND uuid = ? AND richState = 0 AND richPreview IS NULL",
-                               arguments: [data, job.id, job.uuid])
+                try db.execute(sql: "UPDATE item SET richPreview = ? WHERE id = ? AND uuid = ? AND checksum = ? AND richState = 0 AND richPreview IS NULL",
+                               arguments: [data, job.id, job.uuid, job.checksum])
                 filled = db.changesCount > 0
             }
-            try db.execute(sql: "UPDATE item SET richState = 1 WHERE id = ? AND uuid = ?", arguments: [job.id, job.uuid])
+            try Self.markRichRefreshed(db, job)
             return filled
         }
     }
 
-    private func markRichRefreshed(_ job: OCRJob) throws {
-        try db.write { db in
-            try db.execute(sql: "UPDATE item SET richState = 1 WHERE id = ? AND uuid = ?", arguments: [job.id, job.uuid])
-        }
+    private func markRichRefreshed(_ job: RichRefreshJob) throws {
+        try db.write { db in try Self.markRichRefreshed(db, job) }
+    }
+
+    /// 内容换过的不标：新内容入库时已重新判断过要不要补算。
+    private static func markRichRefreshed(_ db: Database, _ job: RichRefreshJob) throws {
+        try db.execute(sql: "UPDATE item SET richState = 1 WHERE id = ? AND uuid = ? AND checksum = ?", arguments: [job.id, job.uuid, job.checksum])
     }
 
     // MARK: 图片文字识别
@@ -904,22 +900,10 @@ public final class HistoryStore: Sendable {
         }
     }
 
-    /// 记下来源应用的图标，只在还没有时写入。
-    /// 补写卡片的富文本缓存：只有 HTML、没有 RTF 的文本条目（如 WPS），入库时生不成缓存，
-    /// 由主线程把 HTML 转好后再写进来（HTML 转换要用 WebKit，不能在入库的后台线程做）。
-    /// 只写还没有缓存的文本条目，不覆盖。返回是否写入。字符数不变，仍按纯文本算（用户决定）。
-    /// `data` 由 `richPreviewData(from:)` 生成。
-    @discardableResult
-    public func fillRichPreview(_ data: Data, for id: Int64) throws -> Bool {
-        try db.write { db in
-            try db.execute(sql: "UPDATE item SET richPreview = ? WHERE id = ? AND kind = 'text' AND richPreview IS NULL", arguments: [data, id])
-            return db.changesCount > 0
-        }
-    }
-
     /// 卡片缓存的数据：开头 `richPreviewLimit` 个字符，有图片时写 RTFD，否则写 RTF。和入库时生成的一样。
     public static func richPreviewData(from rich: NSAttributedString) -> Data? { Derived.richPreview(from: rich) }
 
+    /// 记下来源应用的图标，只在还没有时写入。
     public func setAppIconIfMissing(bundleID: String, png: Data) throws {
         try db.write { db in
             try db.execute(sql: "UPDATE app SET icon = ? WHERE bundleID = ? AND icon IS NULL", arguments: [png, bundleID])
@@ -1016,6 +1000,8 @@ public final class HistoryStore: Sendable {
         var pixelHeight: Int?
         var fileBytes: Int64?
         var richPreview: Data?
+        /// 只有 HTML、没有 RTF/RTFD 的文本条目为 0：卡片缓存要由应用在主线程转换后补写（见 `refreshRich`）。
+        var richState = 1
 
         init(snapshot: ClipSnapshot) {
             switch snapshot.kind {
@@ -1052,6 +1038,8 @@ public final class HistoryStore: Sendable {
                     richPreview = Self.richPreview(from: rich)
                     // 卡片的字符数：有富文本时按富文本的 UTF-16 长度（原版：百度那条 3,220，纯文本是 3,071）。
                     charCount = rich.length
+                } else if snapshot.kind == .text, snapshot.items.first?.data(for: ClipType.html) != nil {
+                    richState = 0
                 }
             }
         }

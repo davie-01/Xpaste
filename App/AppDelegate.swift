@@ -130,7 +130,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         linkIndexer = links
         Task { await links.kick() }
 
-        refreshOldRichPreviews()
+        // 只有 HTML 的条目补写卡片缓存；启动时先把上次退出前没做完的补上。
+        kickRichRefresh()
 
         let stack = StackController(store: store) { [weak self] in self?.monitor.acknowledge(changeCount: $0) }
         stack.onPasted = { [weak self] in
@@ -561,7 +562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch result {
             case .success(let summary):
                 self.panelController.historyDidChange()
-                self.fillRichPreviewFromHTML(summary, snapshot)
+                if summary.kind == .text { self.kickRichRefresh() }
                 // Stack 开着时，这次复制同时排进队列。
                 self.stack?.collect(snapshot, summary: summary)
                 SoundEffects.shared.play(.copy)
@@ -715,53 +716,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
         panelController.historyDidChange()
-        fillRichPreviewFromHTML(summary, snapshot)
+        if summary.kind == .text { kickRichRefresh() }
         if snapshot.kind == .image, let ocrIndexer { Task { await ocrIndexer.kick() } }
         if snapshot.kind == .link, let linkIndexer { Task { await linkIndexer.kick() } }
         return summary
     }
 
-    /// 只有 HTML、没有 RTF 的文本（如 WPS）入库时生不成卡片缓存：在主线程把 HTML 转成富文本，补写缓存后刷新卡片。
-    /// 已有缓存的（有 RTF、RTFD，或之前补过）不动。同样内容再复制一次时，旧条目也会在这里补上。
-    private func fillRichPreviewFromHTML(_ summary: ClipSummary, _ snapshot: ClipSnapshot) {
-        guard summary.kind == .text, summary.richPreview == nil, let item = snapshot.items.first,
-              RichText.decode(item) == nil, let html = item.data(for: ClipType.html),
-              let rich = Log.measure("html-preview", { RichText.decodeHTML(html) }),
-              let data = HistoryStore.richPreviewData(from: rich) else { return }
-        let store = store!, id = summary.id
-        Task { [weak self] in
-            let filled = await Task.detached(priority: .utility) { (try? store.fillRichPreview(data, for: id)) ?? false }.value
-            if filled { self?.panelController.historyDidChange() }
-        }
-    }
+    /// 只有 HTML 的文本条目（WPS、Codex 等）补写卡片缓存（v8-rich-refresh，L179）：入库时标成待补写，
+    /// 存储层在后台取出 HTML，回到主线程转换（WebKit），再到后台写入；字符数仍按纯文本（用户决定）。
+    /// 从最新的一条往前逐条做；HTML 转换之间让出主线程，不影响面板操作。每补好 20 条刷新一次面板，做完再刷新一次。
+    private var richRefreshTask: Task<Void, Never>?
+    /// 补写期间又有新条目入库：这一轮做完后再查一遍，免得在“刚查完没有了、还没退出”的空当里漏掉。
+    private var richRefreshAgain = false
 
-    /// 1.0.6 之前的文本条目按新规则补算（v8-rich-refresh，L178、L179）：有 RTF、RTFD 的重算卡片缓存和字符数；
-    /// 只有 HTML 的（WPS、Codex 等）在主线程转成富文本、补写卡片缓存，字符数仍按纯文本。
-    /// 启动后在后台从最新的一条往前逐条做，做完就不再排队；HTML 转换之间让出主线程，不影响面板操作。
-    /// 每补好一批刷新一次面板，最后再刷新一次。
-    private func refreshOldRichPreviews() {
+    /// 启动时和每次有文本条目入库后调用。已经在做就只记下来，由这一轮接着做。
+    private func kickRichRefresh() {
+        guard richRefreshTask == nil else {
+            richRefreshAgain = true
+            return
+        }
         let store = store!
-        Task { [weak self] in
+        richRefreshTask = Task { [weak self] in
             var processed = 0, changed = 0, pendingRefresh = 0
             let started = ContinuousClock.now
             while true {
-                let next = await Task.detached(priority: .utility) { () -> Result<(OCRJob, HistoryStore.RichRefreshStep)?, Error> in
+                let next = await Task.detached(priority: .utility) { () -> Result<(HistoryStore.RichRefreshJob, HistoryStore.RichRefreshStep)?, Error> in
                     Result {
                         guard let job = try store.nextTextAwaitingRichRefresh() else { return nil }
                         return (job, try store.refreshRich(job))
                     }
                 }.value
+                guard let self else { return }
                 guard case .success(let step) = next else {
-                    if case .failure(let error) = next { Log.capture.error("补算旧文本条目失败: \(String(describing: error))") }
+                    if case .failure(let error) = next { Log.capture.error("补写卡片缓存失败: \(String(describing: error))") }
                     break
                 }
-                guard let (job, result) = step, let self else { break }
+                guard let (job, result) = step else {
+                    // 查完没有了：期间有新条目入库的话再查一遍。
+                    if self.richRefreshAgain { self.richRefreshAgain = false; continue }
+                    break
+                }
                 processed += 1
                 switch result {
-                case .done(let didChange):
-                    if didChange { changed += 1; pendingRefresh += 1 }
+                case .done:
+                    break
                 case .needsHTML(let html):
-                    // HTML 转换用 WebKit，只能在主线程；超过 2 MB、转不出来的记成没有缓存，仍显示纯文本。
+                    // 超过 2 MB、转不出来的记成没有缓存，仍显示纯文本。
                     let data = Log.measure("html-preview") { RichText.decodeHTML(html) }.flatMap(HistoryStore.richPreviewData)
                     let filled = await Task.detached(priority: .utility) { (try? store.finishRichRefresh(job, richPreview: data)) ?? false }.value
                     if filled { changed += 1; pendingRefresh += 1 }
@@ -772,9 +772,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.panelController.historyDidChange()
                 }
             }
+            self?.richRefreshTask = nil
+            self?.richRefreshAgain = false
             if pendingRefresh > 0 { self?.panelController.historyDidChange() }
-            if processed > 0 {
-                Log.capture.notice("旧文本条目按新规则补算完成：\(processed) 条，更新 \(changed) 条，用时 \(String(describing: ContinuousClock.now - started))")
+            if processed > 1 {
+                Log.capture.notice("卡片缓存补写完成：\(processed) 条，更新 \(changed) 条，用时 \(String(describing: ContinuousClock.now - started))")
             }
         }
     }

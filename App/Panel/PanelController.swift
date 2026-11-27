@@ -3225,7 +3225,10 @@ extension PanelController {
     }
     var debugLockBadgeVisible: Bool { !lockBadge.isHidden }
     var debugEdgeGlowLit: Bool { edgeGlow.isLit }
+    #if DEBUG
+    // 只有自检用；`ResizeHandleView.debugHover` 只在 Debug 里有（测量用的 Profile 构建只定义 BENCH）。
     func debugHoverEdge(_ value: Bool) { resizeHandle.debugHover(value) }
+    #endif
     var debugResizeDirections: NSCursor.FrameResizeDirection.Set { resizeHandle.directions }
     func debugClickLockBadge() { lockBadge.performClick(nil) }
     var debugMoreMenuTitles: [String] {
@@ -3338,11 +3341,14 @@ extension PanelController {
     var debugPreviewAwaitsImage: Bool { preview.awaitsImage }
     var debugPreviewShowsImage: Bool { preview.showsImage }
     var debugPreviewText: NSAttributedString? { preview.shownText }
+    #if DEBUG
+    // 预览浮层的这几个接口只在 Debug 里有（测量用的 Profile 构建只定义 BENCH）。
     var debugPreviewTextScrollY: CGFloat? { preview.debugTextScrollY }
     var debugPreviewTextScrollerValue: Float? { preview.debugTextScrollerValue }
     func debugScrollPreviewText(toY y: CGFloat) { preview.debugScrollText(toY: y) }
     var debugPreviewImageZoom: (magnification: CGFloat, origin: NSPoint)? { preview.debugImageZoom }
     func debugZoomPreviewImage(_ magnification: CGFloat) { preview.debugZoomImage(magnification) }
+    #endif
     /// 按住第 index 张卡片起拖时，拖放剪贴板上的内容：写进一个临时剪贴板再读出来，数据提供者会被真正调用。
     func debugDragPasteboard(at index: Int) -> [NSPasteboardItem] {
         let board = NSPasteboard(name: .init("com.mars.XPaste.selftest-drag-\(UUID().uuidString)"))

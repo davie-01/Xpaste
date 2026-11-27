@@ -88,8 +88,9 @@ enum SelfTest {
     }
 
     static func run() async {
+        // 自检用的数据目录在结束时删掉（见文件末尾 `exit` 前）。不能只靠 defer：`exit` 直接结束进程，defer 不会执行，
+        // 以前每跑一次都在临时目录里留下一份几十 MB 的库。
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("xpaste-selftest-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
         var failures = 0
         func check(_ name: String, _ ok: Bool, _ detail: String = "") {
             print("\(ok ? "PASS" : "FAIL") \(name) \(detail)")
@@ -1268,13 +1269,7 @@ enum SelfTest {
                 richDoc.append(NSAttributedString(attachment: NSTextAttachment(fileWrapper: wrapper)))
                 richDoc.append(NSAttributedString(string: "\n" + (1...800).map { "富文本第 \($0) 行" }.joined(separator: "\n")))
                 let rtfd = richDoc.rtfd(from: NSRange(location: 0, length: richDoc.length), documentAttributes: [:]) ?? Data()
-                // 本机排查用：XPASTE_SELFTEST_RTFD=<flat RTFD 文件> 时，把这份真实数据也按同样流程测一遍。
-                var extra: [(String, [ClipRepresentation])] = []
-                if let path = ProcessInfo.processInfo.environment["XPASTE_SELFTEST_RTFD"], let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                   let decoded = NSAttributedString(rtfd: data, documentAttributes: nil) {
-                    extra.append(("指定的 RTFD", [ClipRepresentation(type: ClipType.plainText, data: Data(decoded.string.utf8)), ClipRepresentation(type: ClipType.flatRTFD, data: data)]))
-                }
-                let cases: [(String, [ClipRepresentation])] = extra + [
+                let cases: [(String, [ClipRepresentation])] = [
                     ("小纯文本", [ClipRepresentation(type: ClipType.plainText, data: Data(lines.utf8))]),
                     ("超过 256 KB 的纯文本", [ClipRepresentation(type: ClipType.plainText, data: Data((lines + "\n" + String(repeating: "填充", count: 140_000)).utf8))]),
                     ("带图片的富文本", [ClipRepresentation(type: ClipType.plainText, data: Data(richDoc.string.utf8)), ClipRepresentation(type: ClipType.flatRTFD, data: rtfd)]),
@@ -1590,6 +1585,7 @@ enum SelfTest {
             // 文件行：加进来时在后台检查文件；能访问的文件按 ⌘V 照常写出文件地址（用户真机：文件粘不出来）
             let stackFileURL = FileManager.default.temporaryDirectory.appendingPathComponent("xpaste-stack-\(UUID().uuidString).txt")
             try Data("stack file".utf8).write(to: stackFileURL)
+            defer { try? FileManager.default.removeItem(at: stackFileURL) }
             let stackFile = ClipSnapshot(items: [ClipItemSnapshot(representations: [
                 ClipRepresentation(type: ClipType.fileURL, data: Data(stackFileURL.absoluteString.utf8))])])
             stack.add([try store.record(stackFile)])
@@ -1929,6 +1925,7 @@ enum SelfTest {
             check("自检过程无异常", false, "\(error)")
         }
         print(failures == 0 ? "SELFTEST OK" : "SELFTEST FAILED (\(failures))")
+        try? FileManager.default.removeItem(at: directory)
         exit(failures == 0 ? 0 : 1)
     }
 

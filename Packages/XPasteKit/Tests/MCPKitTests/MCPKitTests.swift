@@ -30,7 +30,19 @@ private final class StackRecorder: @unchecked Sendable {
     var recorded: [[Int64]] { lock.withLock { calls } }
 }
 
+/// 测试用的临时目录：最后一个持有者释放时删掉，测试不在系统临时目录里留数据。
+private final class TemporaryDirectory: Sendable {
+    let url: URL
+
+    init(_ prefix: String) {
+        url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)-\(UUID().uuidString)")
+    }
+
+    deinit { try? FileManager.default.removeItem(at: url) }
+}
+
 private struct Harness {
+    let directory = TemporaryDirectory("xpaste-mcp")
     let store: HistoryStore
     let stack = StackRecorder()
     let clients: MCPClientStore
@@ -38,8 +50,7 @@ private struct Harness {
     let approver = FakeApprover()
 
     init(clientsURL: URL? = nil) throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("xpaste-mcp-\(UUID().uuidString)")
-        store = try HistoryStore(directory: directory)
+        store = try HistoryStore(directory: directory.url)
         clients = MCPClientStore(url: clientsURL)
         let approver = approver
         let stack = stack
@@ -211,6 +222,7 @@ private struct Harness {
 
     @Test func clientStorePersistsHashesOnly() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("xpaste-mcp-clients-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
         let h = try Harness(clientsURL: url)
         let token = try #require(try await h.authorize().token)
         let saved = try String(contentsOf: url, encoding: .utf8)
@@ -447,6 +459,7 @@ private struct Harness {
     /// 真实监听：只在 127.0.0.1 上可连，停止后连接被拒。
     @Test func listensOnLoopbackOnlyAndStops() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("xpaste-mcp-net-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
         let store = try HistoryStore(directory: directory)
         var service: MCPService?
         var bound: UInt16 = 0
@@ -487,6 +500,7 @@ private struct Harness {
     /// 经真实端口转发：初始化后自动带会话号，通知没有输出，错误令牌给出可读的 JSON-RPC 错误。
     @Test func forwardsLinesOverHTTP() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("xpaste-mcp-bridge-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
         let store = try HistoryStore(directory: directory)
         let clients = MCPClientStore(url: nil)
         var service: MCPService?

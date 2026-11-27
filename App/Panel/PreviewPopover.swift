@@ -84,12 +84,14 @@ final class PreviewPopover: NSObject {
     var showsImage: Bool { isDisplayed && controller.showsImage }
     /// 文本预览当前显示的内容（含格式）。
     var shownText: NSAttributedString? { isDisplayed ? controller.shownText : nil }
+    #if DEBUG
     /// 自检用：文本预览的滚动位置、图片预览的缩放和滚动位置。
     var debugTextScrollY: CGFloat? { isDisplayed ? controller.debugTextScrollY : nil }
     var debugTextScrollerValue: Float? { isDisplayed ? controller.debugTextScrollerValue : nil }
     func debugScrollText(toY y: CGFloat) { controller.debugScrollText(toY: y) }
     var debugImageZoom: (magnification: CGFloat, origin: NSPoint)? { isDisplayed ? controller.debugImageZoom : nil }
     func debugZoomImage(_ magnification: CGFloat) { controller.debugZoomImage(magnification) }
+    #endif
 
     /// 后台解码好的原图。期间已经切到别的条目或关掉浮层就丢弃。
     func setImage(_ image: NSImage?, for id: ClipSummary.ID) {
@@ -347,6 +349,8 @@ private final class PreviewViewController: NSViewController {
     private(set) var awaitsImage = false
     var showsImage: Bool { !imageScroll.isHidden && imageView.image != nil }
     var shownText: NSAttributedString? { scrollView.isHidden ? nil : textView.attributedString() }
+    #if DEBUG
+    /// 自检用，见 `PreviewPopover` 里的同名接口。
     var debugTextScrollY: CGFloat? { scrollView.isHidden ? nil : scrollView.contentView.bounds.origin.y }
     var debugTextScrollerValue: Float? { scrollView.isHidden ? nil : scrollView.verticalScroller?.floatValue }
     func debugScrollText(toY y: CGFloat) { textView.scroll(NSPoint(x: 0, y: y)) }
@@ -357,6 +361,7 @@ private final class PreviewViewController: NSViewController {
         imageScroll.magnification = magnification
         imageScroll.contentView.scroll(to: NSPoint(x: imageScroll.contentView.bounds.width, y: imageScroll.contentView.bounds.height))
     }
+    #endif
     private let colorLabel = NSTextField(labelWithString: "")
     private static let unavailableTitleText = String(localized: "无法预览")
     private static let unavailableDetailText = String(localized: "这项内容已保存，仍然可以粘贴。")
