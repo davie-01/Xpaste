@@ -50,7 +50,9 @@ enum MCPSelfTest {
         service.stop()
         try await Task.sleep(for: .milliseconds(100))
         check("MCP 停止后端口不再接受连接", await post(initialize, token: nil).0 == 0, "")
-        check("MCP 偏好默认关闭", !AppPreferences(defaults: UserDefaults(suiteName: "com.mars.XPaste.selftest.mcp.\(UUID().uuidString)")!).mcpEnabled, "")
+        // 偏好域放在本测试的临时目录里，随目录删除（原因见 SelfTest 中的设置测试）
+        let defaults = UserDefaults(suiteName: directory.appendingPathComponent("mcp-defaults").path)!
+        check("MCP 偏好默认关闭", !AppPreferences(defaults: defaults).mcpEnabled, "")
     }
 }
 #endif

@@ -98,10 +98,13 @@ enum SelfTest {
         }
 
         do {
-            // 设置的迁移和持久化只用独立偏好域，不碰真实设置。
-            let suite = "com.mars.XPaste.selftest.\(UUID().uuidString)"
+            // 设置的迁移和持久化只用独立偏好域，不碰真实设置。偏好域名用数据目录里的绝对路径，plist 直接写在那里、
+            // 随目录一起删除：普通名字的偏好域由 cfprefsd 写到 ~/Library/Preferences，removePersistentDomain
+            // 只清空键，cfprefsd 还会在之后把空文件写回去，以前每跑一次自检就留下一个
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            let suite = directory.appendingPathComponent("selftest-defaults").path
             let defaults = UserDefaults(suiteName: suite)!
-            defer { defaults.removePersistentDomain(forName: suite) }
             let preferences = AppPreferences(defaults: defaults)
             check("通用设置默认值", preferences.soundEffectsEnabled && preferences.pasteToApplication
                   && !preferences.alwaysPastePlainText && preferences.retention == .month && !preferences.wheelScrollsCards)
